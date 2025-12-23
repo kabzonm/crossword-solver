@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(pip uninstall:*)",
+      "Bash(pip install:*)",
+      "Bash(timeout 5 streamlit run:*)",
+      "Bash(timeout 8 streamlit run:*)",
+      "Bash(taskkill:*)",
+      "Bash(where:*)",
+      "Bash(powershell -Command \"& {$url = ''https://digi.bib.uni-mannheim.de/tesseract/tesseract-ocr-w64-setup-5.5.0.20241111.exe''; $output = ''C:\\\\Users\\\\Kabzon family\\\\Downloads\\\\tesseract-installer.exe''; Write-Host ''Downloading Tesseract...''; Invoke-WebRequest -Uri $url -OutFile $output; Write-Host ''Downloaded to:'' $output}\")",
+      "Bash(curl:*)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"import streamlit; import cv2; import numpy; print\\(''All OK''\\)\")",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m pip install pytesseract)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c \"from services.ocr_engine_manager import OcrEngineManager; print\\(''OcrEngineManager imported OK''\\)\")",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m streamlit run app.py --server.port 8503)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -c:*)",
+      "Bash(dir:*)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" -m streamlit run \"c:\\\\Users\\\\Kabzon family\\\\Desktop\\\\crossword_solver\\\\app.py\" --server.port 8503)",
+      "Bash(timeout /t 10 /nobreak)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" test_ocr_quick.py)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" test_batch_quick.py)",
+      "Bash(\"C:\\\\Users\\\\Kabzon family\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python312\\\\python.exe\" test_pipeline_debug.py)"
+    ]
+  }
+}
