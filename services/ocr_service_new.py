@@ -1,51 +1,62 @@
 """
-OCR Service (Phase 1 - Refactored)
-שירות OCR מחודש שמשתמש ב-Pipeline המקומי במקום GPT-4
+OCR Service (Phase 2 - Cloud Integration)
+שירות OCR עם תמיכה ב-Google Cloud Vision ו-Claude
 """
 
 import cv2
 import numpy as np
 import streamlit as st
 from models.grid import GridMatrix
-from services.ocr_engine_manager import OcrEngineManager
-from services.arrow_detector import ArrowDetector
+from services.recognition_orchestrator import RecognitionOrchestrator
 from services.confidence_scorer import ConfidenceScorer
 from services.batch_processor import BatchProcessor
+from config.cloud_config import get_cloud_config, CloudServicesConfig
 
 
 class OcrService:
     """
-    שירות OCR מחודש - Phase 1
-    משתמש ב-EasyOCR/PaddleOCR + Template Matching במקום GPT-4
+    שירות OCR - Phase 2
+    משתמש ב-Google Cloud Vision לטקסט + Claude לחצים
     """
 
-    def __init__(self, use_local_ocr: bool = True):
+    def __init__(
+        self,
+        use_cloud_services: bool = True,
+        config: CloudServicesConfig = None
+    ):
         """
         Args:
-            use_local_ocr: אם True, משתמש בפייפליין המקומי החדש
-                          אם False, משתמש ב-GPT-4 הישן (fallback)
+            use_cloud_services: אם True, משתמש ב-cloud APIs
+                               אם False, משתמש ב-local fallback בלבד
+            config: הגדרות cloud services (אופציונלי)
         """
-        self.use_local_ocr = use_local_ocr
+        self.use_cloud_services = use_cloud_services
+        self.config = config or get_cloud_config()
 
-        if self.use_local_ocr:
-            # Pipeline החדש
-            print("Initializing Phase 1 OCR Pipeline...")
-            self.ocr_manager = OcrEngineManager()
-            self.ocr_manager.initialize_engines()
-            self.arrow_detector = ArrowDetector()
-            self.confidence_scorer = ConfidenceScorer()
-            self.batch_processor = BatchProcessor(
-                self.ocr_manager,
-                self.arrow_detector,
-                self.confidence_scorer
-            )
-            print("✓ Phase 1 Pipeline ready")
-        else:
-            # Fallback לקוד הישן (GPT-4)
-            from services.ocr_service import OcrService as OldOcrService
-            self._old_service = OldOcrService()
+        # שינוי ההגדרות אם לא רוצים cloud
+        if not use_cloud_services:
+            self.config.text_ocr_provider = "tesseract"
+            self.config.arrow_detector_provider = "template"
 
-    def recognize_clues(self, original_image: np.ndarray, grid: GridMatrix):
+        print(f"Initializing OCR Service (Phase 2)...")
+        print(f"  Text OCR: {self.config.text_ocr_provider}")
+        print(f"  Arrow Detection: {self.config.arrow_detector_provider}")
+
+        # יצירת components
+        self.orchestrator = RecognitionOrchestrator(self.config)
+        self.confidence_scorer = ConfidenceScorer()
+        self.batch_processor = BatchProcessor(
+            self.orchestrator,
+            self.confidence_scorer
+        )
+
+        print("[OK] OCR Service ready")
+
+    def recognize_clues(
+        self,
+        original_image: np.ndarray,
+        grid: GridMatrix
+    ) -> GridMatrix:
         """
         זיהוי הגדרות במשבצות
 
@@ -56,32 +67,37 @@ class OcrService:
         Returns:
             GridMatrix מעודכן עם תוצאות הזיהוי
         """
-        if self.use_local_ocr:
-            return self._recognize_with_local_pipeline(original_image, grid)
-        else:
-            return self._old_service.recognize_clues(original_image, grid)
+        return self._recognize_with_orchestrator(original_image, grid)
 
-    def _recognize_with_local_pipeline(
+    def _recognize_with_orchestrator(
         self,
         original_image: np.ndarray,
         grid: GridMatrix
     ) -> GridMatrix:
-        """
-        זיהוי עם Pipeline מקומי חדש
-        """
-        # דיבוג: הצגת מידע על הגריד
+        """זיהוי עם Orchestrator"""
         from models.grid import CellType
+
+        # דיבוג
         total_cells = grid.rows * grid.cols
         clue_cells = sum(1 for r in range(grid.rows) for c in range(grid.cols)
-                        if grid.matrix[r][c].type == CellType.CLUE)
+                         if grid.matrix[r][c].type == CellType.CLUE)
         bbox_cells = sum(1 for r in range(grid.rows) for c in range(grid.cols)
-                        if hasattr(grid.matrix[r][c], 'bbox'))
+                         if hasattr(grid.matrix[r][c], 'bbox'))
 
         print(f"Grid info: {grid.rows}x{grid.cols} = {total_cells} cells")
         print(f"  CLUE cells: {clue_cells}")
         print(f"  Cells with bbox: {bbox_cells}")
 
-        st.write(f"**דיבוג:** גריד {grid.rows}x{grid.cols}, משבצות CLUE: {clue_cells}, עם bbox: {bbox_cells}")
+        # הצגת ספקים פעילים
+        providers = self.orchestrator.get_active_providers()
+        st.info(f"""
+        **הגדרות זיהוי:**
+        - זיהוי טקסט: {providers['text_ocr']} {'✅' if providers['google_available'] else '⚠️ לא מוגדר'}
+        - זיהוי חצים: {providers['arrow_detector']} {'✅' if providers['claude_available'] else '⚠️ לא מוגדר'}
+        - Fallback: {'מופעל' if providers['fallback_enabled'] else 'מושבת'}
+        """)
+
+        st.write(f"**גריד:** {grid.rows}x{grid.cols}, משבצות הגדרה: {clue_cells}")
 
         # Progress tracking
         progress_bar = st.progress(0)
@@ -99,7 +115,7 @@ class OcrService:
             progress_callback=update_progress
         )
 
-        # הצגת סטטיסטיקות
+        # סטטיסטיקות
         stats = self.batch_processor.get_processing_stats(updated_grid)
 
         status_text.empty()
@@ -136,4 +152,6 @@ class OcrService:
         """
         המרת כיוון חץ לאייקון (תאימות לאחור)
         """
-        return self.arrow_detector.get_arrow_icon(path)
+        from services.arrow_detector import ArrowDetector
+        detector = ArrowDetector()
+        return detector.get_arrow_icon(path)

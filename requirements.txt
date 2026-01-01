@@ -1,0 +1,24 @@
+streamlit>=1.28.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.1.0
+Pillow>=10.0.0
+streamlit-drawable-canvas-fix>=0.9.8
+
+# Phase 1: OCR engines (fallback)
+pytesseract>=0.3.10
+
+# Phase 2: Cloud Services
+google-cloud-vision>=3.4.0
+anthropic>=0.18.0
+
+# Optional: EasyOCR/PaddleOCR (disabled by default)
+# easyocr>=1.7.0
+# paddleocr>=2.7.0
+
+# Utilities
+requests>=2.31.0
+pydantic>=2.0.0
+
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0

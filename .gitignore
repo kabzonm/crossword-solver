@@ -40,3 +40,8 @@ Thumbs.db
 temp/
 tmp/
 profile.stats
+
+# API Keys - DO NOT COMMIT
+google_vision_api.txt
+claude_api.txt
+*.api.txt

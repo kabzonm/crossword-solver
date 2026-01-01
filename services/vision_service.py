@@ -58,45 +58,78 @@ class VisionService:
         return grid_obj, preview_img, full_image
 
     def _analyze_cell_smart(self, cell: Cell, cell_roi):
+        """
+        זיהוי סוג משבצת - עובד עם תשבצים בכל צבע.
+        משתמש בגישה יחסית: משווה את המשבצת לעצמה במקום ספים קבועים.
+
+        Args:
+            cell: אובייקט התא לעדכון
+            cell_roi: תמונת התא
+        """
         if cell_roi.size == 0: return
-        h, w, _ = cell_roi.shape
-        margin_x = int(w * 0.25)
-        margin_y = int(h * 0.25)
+        h, w = cell_roi.shape[:2]
+        if h < 5 or w < 5: return
+
+        # שוליים - 15% - להתעלם מקווי המסגרת
+        margin_x = max(2, int(w * 0.15))
+        margin_y = max(2, int(h * 0.15))
         inner = cell_roi[margin_y:h-margin_y, margin_x:w-margin_x]
         if inner.size == 0: inner = cell_roi
 
-        hsv = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
-        mean_sat = np.mean(hsv[:, :, 1])
-        mean_val = np.mean(hsv[:, :, 2])
-        
-        if mean_val < 60:
+        # המרה לגווני אפור
+        gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
+
+        # === בדיקה 1: משבצת שחורה/כהה (BLOCK) ===
+        mean_brightness = np.mean(gray)
+        if mean_brightness < 50:
             cell.type = CellType.BLOCK
             return
 
-        if mean_sat > 25: 
-            cell.type = CellType.CLUE
-            gray_roi = cv2.cvtColor(cell_roi, cv2.COLOR_BGR2GRAY)
-            cell.split_type = self._detect_split_morph(gray_roi)
-            self._init_clue_slots(cell)
-            return
-
-        gray = cv2.cvtColor(inner, cv2.COLOR_BGR2GRAY)
+        # === בדיקה 2: סטיית תקן - המדד המרכזי ===
+        # משבצת ריקה (SOLUTION) = אחידה = סטיית תקן נמוכה
+        # משבצת עם טקסט (CLUE) = מגוונת = סטיית תקן גבוהה
         std_val = np.std(gray)
-        
-        if std_val < 12:
-            cell.type = CellType.SOLUTION
-            return
-            
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-        ink_density = cv2.countNonZero(thresh) / gray.size
-        
-        if ink_density < 0.05:
-            cell.type = CellType.SOLUTION
-        else:
+
+        # === בדיקה 3: ניגודיות מקומית (Contrast) ===
+        # בודק את ההבדל בין הפיקסלים הכהים לבהירים
+        min_val = np.percentile(gray, 5)   # 5% הכי כהים
+        max_val = np.percentile(gray, 95)  # 5% הכי בהירים
+        contrast = max_val - min_val
+
+        # === בדיקה 4: בדיקת צבעוניות (לתשבצים צבעוניים) ===
+        hsv = cv2.cvtColor(inner, cv2.COLOR_BGR2HSV)
+        mean_sat = np.mean(hsv[:, :, 1])  # רוויה
+
+        # === החלטה ===
+        # תשבץ צבעוני: אם יש צבע (saturation) = CLUE
+        # תשבץ אפור-לבן: אם יש ניגודיות או סטיית תקן גבוהה = CLUE
+
+        is_colorful = mean_sat > 20
+        has_text_by_std = std_val > 15
+        has_text_by_contrast = contrast > 40
+
+        # לפחות 2 מתוך 3 אינדיקטורים = CLUE
+        indicators = sum([is_colorful, has_text_by_std, has_text_by_contrast])
+
+        if indicators >= 2:
             cell.type = CellType.CLUE
             gray_roi = cv2.cvtColor(cell_roi, cv2.COLOR_BGR2GRAY)
             cell.split_type = self._detect_split_morph(gray_roi)
             self._init_clue_slots(cell)
+        elif is_colorful and (has_text_by_std or has_text_by_contrast):
+            # תשבץ צבעוני - אם יש צבע + לפחות אינדיקטור אחד נוסף
+            cell.type = CellType.CLUE
+            gray_roi = cv2.cvtColor(cell_roi, cv2.COLOR_BGR2GRAY)
+            cell.split_type = self._detect_split_morph(gray_roi)
+            self._init_clue_slots(cell)
+        elif not is_colorful and (has_text_by_std and has_text_by_contrast):
+            # תשבץ אפור - צריך גם סטיית תקן וגם ניגודיות
+            cell.type = CellType.CLUE
+            gray_roi = cv2.cvtColor(cell_roi, cv2.COLOR_BGR2GRAY)
+            cell.split_type = self._detect_split_morph(gray_roi)
+            self._init_clue_slots(cell)
+        else:
+            cell.type = CellType.SOLUTION
 
     def _detect_split_morph(self, cell_img):
         h, w = cell_img.shape

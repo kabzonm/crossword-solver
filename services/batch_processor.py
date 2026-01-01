@@ -1,6 +1,6 @@
 """
-Batch Processor
-עיבוד מקבילי של משבצות גריד
+Batch Processor - Updated for Phase 2
+עיבוד מקבילי של משבצות גריד עם תמיכה ב-Cloud Services
 """
 
 import time
@@ -11,35 +11,40 @@ from multiprocessing import cpu_count
 
 from models.grid import GridMatrix, Cell, CellType
 from models.recognition_result import CellRecognitionResult
-from services.ocr_engine_manager import OcrEngineManager
-from services.arrow_detector import ArrowDetector
+from services.recognition_orchestrator import RecognitionOrchestrator
 from services.confidence_scorer import ConfidenceScorer
 
 
 class BatchProcessor:
     """
     עיבוד מקבילי של משבצות גריד
-    משלב OCR, Arrow Detection ו-Confidence Scoring
+    Phase 2: משתמש ב-RecognitionOrchestrator לתיאום בין השירותים
     """
 
     def __init__(
         self,
-        ocr_manager: OcrEngineManager,
-        arrow_detector: ArrowDetector,
+        orchestrator: RecognitionOrchestrator = None,
         confidence_scorer: ConfidenceScorer = None,
         max_workers: int = None
     ):
         """
         Args:
-            ocr_manager: מנהל OCR
-            arrow_detector: גלאי חצים
+            orchestrator: מתאם הזיהוי (אם None, יוצר אחד חדש)
             confidence_scorer: מחשב ביטחון (אם None, יוצר אחד חדש)
             max_workers: מספר threads (None = cpu_count)
         """
-        self.ocr_manager = ocr_manager
-        self.arrow_detector = arrow_detector
+        self.orchestrator = orchestrator or RecognitionOrchestrator()
         self.confidence_scorer = confidence_scorer or ConfidenceScorer()
-        self.max_workers = max_workers or cpu_count()
+
+        # מספר workers מותאם - פחות ב-cloud כי יש rate limits
+        if max_workers is None:
+            providers = self.orchestrator.get_active_providers()
+            if providers.get('google_available') or providers.get('claude_available'):
+                self.max_workers = min(4, cpu_count())  # הגבלה ל-4 לcloud
+            else:
+                self.max_workers = cpu_count()
+        else:
+            self.max_workers = max_workers
 
     def process_grid(
         self,
@@ -48,28 +53,32 @@ class BatchProcessor:
         progress_callback: Callable[[float], None] = None
     ) -> GridMatrix:
         """
-        עיבוד כל משבצות הגריד במקביל
+        עיבוד כל משבצות הגריד
 
         Args:
             original_image: התמונה המקורית (BGR)
             grid: אובייקט הגריד עם bbox לכל משבצת
-            progress_callback: פונקציה לעדכון התקדמות (מקבלת float 0-1)
+            progress_callback: פונקציה לעדכון התקדמות
 
         Returns:
             GridMatrix מעודכן עם תוצאות הזיהוי
         """
         start_time = time.time()
 
-        # הכנת tasks - רק למשבצות CLUE
+        # הצגת ספקים פעילים
+        providers = self.orchestrator.get_active_providers()
+        print(f"Active providers: OCR={providers['text_ocr']}, Arrows={providers['arrow_detector']}")
+
+        # הכנת tasks
         tasks = self._prepare_tasks(original_image, grid)
 
         if not tasks:
             print("No CLUE cells to process")
             # הוספת דיבוג - כמה תאים מכל סוג יש?
             clue_count = sum(1 for r in range(grid.rows) for c in range(grid.cols)
-                           if grid.matrix[r][c].type == CellType.CLUE)
+                             if grid.matrix[r][c].type == CellType.CLUE)
             bbox_count = sum(1 for r in range(grid.rows) for c in range(grid.cols)
-                           if hasattr(grid.matrix[r][c], 'bbox'))
+                             if hasattr(grid.matrix[r][c], 'bbox'))
             print(f"  Debug: Total CLUE cells: {clue_count}, Cells with bbox: {bbox_count}")
 
             import streamlit as st
@@ -83,13 +92,11 @@ class BatchProcessor:
         # עיבוד מקבילי
         results = {}
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            # שליחת כל ה-tasks
             future_to_task = {
                 executor.submit(self._process_single_cell, task): task
                 for task in tasks
             }
 
-            # איסוף תוצאות
             completed = 0
             for future in as_completed(future_to_task):
                 task = future_to_task[future]
@@ -102,49 +109,54 @@ class BatchProcessor:
                     print(f"Error processing cell ({task['row']}, {task['col']}): {e}")
                     results[cell_key] = CellRecognitionResult(error=str(e))
 
-                # עדכון progress
                 completed += 1
                 if progress_callback:
                     progress_callback(completed / len(tasks))
 
-        # עדכון הגריד עם התוצאות
+        # עדכון הגריד
         self._update_grid_with_results(grid, results)
 
         total_time = time.time() - start_time
-        print(f"✓ Batch processing completed in {total_time:.2f}s")
+        print(f"[OK] Batch processing completed in {total_time:.2f}s")
         print(f"  Average time per cell: {total_time / len(tasks):.3f}s")
 
         return grid
 
     def _prepare_tasks(self, original_image: np.ndarray, grid: GridMatrix) -> list:
-        """
-        הכנת רשימת tasks לעיבוד
-
-        Args:
-            original_image: תמונה מקורית
-            grid: הגריד
-
-        Returns:
-            רשימת dictionaries עם מידע לכל task
-        """
+        """הכנת רשימת tasks לעיבוד"""
         tasks = []
+        img_h, img_w = original_image.shape[:2]
 
         for r in range(grid.rows):
             for c in range(grid.cols):
                 cell = grid.matrix[r][c]
 
-                # מעבד רק משבצות CLUE
                 if cell.type == CellType.CLUE and hasattr(cell, 'bbox'):
                     x1, y1, x2, y2 = cell.bbox
-
-                    # חיתוך ROI
                     cell_image = original_image[y1:y2, x1:x2].copy()
 
                     if cell_image.size > 0:
+                        cell_w = x2 - x1
+                        cell_h = y2 - y1
+
+                        # תמונה מורחבת לזיהוי חצים עם Claude
+                        # הרחבה קטנה של 30% לכל צד - מספיק לראות חץ בקצה
+                        # בלי להכניס חצים מתאים שכנים שמבלבלים
+                        arrow_expand_x = int(cell_w * 0.3)  # 30% הרחבה לכל צד
+                        arrow_expand_y = int(cell_h * 0.3)
+
+                        arrow_x1 = max(0, x1 - arrow_expand_x)
+                        arrow_y1 = max(0, y1 - arrow_expand_y)
+                        arrow_x2 = min(img_w, x2 + arrow_expand_x)
+                        arrow_y2 = min(img_h, y2 + arrow_expand_y)
+
+                        arrow_context_image = original_image[arrow_y1:arrow_y2, arrow_x1:arrow_x2].copy()
+
                         tasks.append({
                             'row': r,
                             'col': c,
-                            'image': cell_image,
+                            'image': cell_image,  # תמונה מדויקת לזיהוי טקסט (OCR)
+                            'arrow_image': arrow_context_image,  # תמונה מורחבת לזיהוי חצים (Claude)
                             'bbox': cell.bbox,
                             'cell': cell
                         })
@@ -152,36 +164,32 @@ class BatchProcessor:
         return tasks
 
     def _process_single_cell(self, task: dict) -> CellRecognitionResult:
-        """
-        עיבוד משבצת בודדת (OCR + Arrow + Confidence)
-
-        Args:
-            task: מידע על המשבצת
-
-        Returns:
-            CellRecognitionResult
-        """
+        """עיבוד משבצת בודדת"""
         start_time = time.time()
-        cell_image = task['image']
+        cell_image = task['image']  # תמונה מדויקת לזיהוי טקסט
+        arrow_image = task.get('arrow_image', cell_image)  # תמונה מורחבת לזיהוי חצים
         cell_bbox = task['bbox']
         row, col = task['row'], task['col']
 
         try:
-            # 1. OCR
-            print(f"  [{row},{col}] Starting OCR...")
-            preprocessed_image = self.ocr_manager.preprocess_image(cell_image)
-            ocr_result = self.ocr_manager.recognize_text(preprocessed_image)
-            print(f"  [{row},{col}] OCR done: text='{ocr_result.text[:30] if ocr_result.text else ''}' conf={ocr_result.confidence:.2f}")
+            # Phase 2: שימוש ב-Orchestrator
+            print(f"  [{row},{col}] Processing with orchestrator...")
+            print(f"    Cell image: {cell_image.shape}, Arrow image: {arrow_image.shape}")
+            ocr_result, arrow_results = self.orchestrator.recognize_cell(
+                cell_image,  # תמונה מדויקת ל-OCR (Google Vision)
+                cell_bbox,
+                arrow_image=arrow_image  # תמונה מורחבת לחצים (Claude)
+            )
+            print(f"  [{row},{col}] OCR: '{ocr_result.text[:20] if ocr_result.text else ''}' ({ocr_result.confidence:.2f})")
+            print(f"  [{row},{col}] Arrows: {len(arrow_results)} found")
+            for i, ar in enumerate(arrow_results):
+                print(f"    Arrow {i+1}: {ar.direction} ({ar.confidence:.2f})")
 
-            # 2. Arrow Detection
-            print(f"  [{row},{col}] Starting Arrow detection...")
-            arrow_result = self.arrow_detector.detect_arrow(cell_image, cell_bbox)
-            print(f"  [{row},{col}] Arrow done: dir={arrow_result.direction} conf={arrow_result.confidence:.2f}")
-
-            # 3. Confidence Scoring
+            # Confidence Scoring - משתמש בחץ הראשון (הכי בטוח)
+            primary_arrow = arrow_results[0] if arrow_results else None
             confidence_score = self.confidence_scorer.calculate_confidence(
                 ocr_result,
-                arrow_result,
+                primary_arrow,
                 cell_image
             )
 
@@ -189,10 +197,11 @@ class BatchProcessor:
 
             return CellRecognitionResult(
                 ocr_result=ocr_result,
-                arrow_result=arrow_result,
+                arrow_results=arrow_results,
                 confidence=confidence_score,
                 processing_time=processing_time,
-                cell_image=cell_image
+                cell_image=cell_image,
+                arrow_image=arrow_image
             )
 
         except Exception as e:
@@ -205,49 +214,58 @@ class BatchProcessor:
             )
 
     def _update_grid_with_results(self, grid: GridMatrix, results: dict) -> None:
-        """
-        עדכון הגריד עם התוצאות
-
-        Args:
-            grid: הגריד המקורי
-            results: dict של תוצאות {(row, col): CellRecognitionResult}
-        """
+        """עדכון הגריד עם התוצאות - שורה נפרדת לכל חץ"""
         print(f"Updating grid with {len(results)} results...")
         updated_count = 0
+        total_clues = 0
 
         for (row, col), result in results.items():
             cell = grid.matrix[row][col]
-
-            # שמירת התוצאה על התא
             cell.recognition_result = result
 
-            # יצירת parsed_clues בפורמט הישן - תמיד יוצרים, גם אם אין תוצאה
             ocr_text = result.ocr_result.text if result.ocr_result else ""
             ocr_conf = result.ocr_result.confidence if result.ocr_result else 0.0
-            arrow_dir = result.arrow_result.direction if result.arrow_result else 'none'
-            arrow_conf = result.arrow_result.confidence if result.arrow_result else 0.0
             overall_conf = result.confidence.overall if result.confidence else 0.0
 
-            clue_dict = {
-                'text': ocr_text,
-                'path': arrow_dir,
-                'zone': 'full_cell',
-                'confidence': overall_conf,
-                'ocr_confidence': ocr_conf,
-                'arrow_confidence': arrow_conf
-            }
-
-            # אתחול parsed_clues אם לא קיים
             if not hasattr(cell, 'parsed_clues') or cell.parsed_clues is None:
                 cell.parsed_clues = []
-            cell.parsed_clues.append(clue_dict)
+
+            # יצירת שורה נפרדת לכל חץ שזוהה
+            arrow_results = result.arrow_results or []
+
+            if not arrow_results:
+                # אין חצים - יוצרים שורה אחת עם 'none'
+                clue_dict = {
+                    'text': ocr_text,
+                    'path': 'none',
+                    'zone': 'full_cell',
+                    'confidence': overall_conf,
+                    'ocr_confidence': ocr_conf,
+                    'arrow_confidence': 0.0
+                }
+                cell.parsed_clues.append(clue_dict)
+                total_clues += 1
+            else:
+                # יש חצים - שורה נפרדת לכל חץ
+                for arrow in arrow_results:
+                    clue_dict = {
+                        'text': ocr_text,
+                        'path': arrow.direction,
+                        'arrow_position': arrow.position,
+                        'zone': 'full_cell',
+                        'confidence': overall_conf,
+                        'ocr_confidence': ocr_conf,
+                        'arrow_confidence': arrow.confidence
+                    }
+                    cell.parsed_clues.append(clue_dict)
+                    total_clues += 1
+
             updated_count += 1
 
-            # דיבוג - הצג כמה תאים מעודכנים
             if updated_count <= 3:
-                print(f"  Cell ({row},{col}): text='{ocr_text[:20]}...' conf={overall_conf:.2f}")
+                arrows_str = ', '.join([a.direction for a in arrow_results]) if arrow_results else 'none'
+                print(f"  Cell ({row},{col}): text='{ocr_text[:20]}...' arrows=[{arrows_str}]")
 
-            # שמירת תמונה לדיבוג
             if result.cell_image is not None:
                 import cv2
                 import base64
@@ -255,18 +273,18 @@ class BatchProcessor:
                 b64_img = base64.b64encode(buffer).decode('utf-8')
                 cell.debug_image = f"data:image/png;base64,{b64_img}"
 
-        print(f"✓ Updated {updated_count} cells with parsed_clues")
+            # שמירת התמונה שנשלחה לקלוד (לדיבוג)
+            if result.arrow_image is not None:
+                import cv2
+                import base64
+                _, buffer = cv2.imencode('.png', result.arrow_image)
+                b64_img = base64.b64encode(buffer).decode('utf-8')
+                cell.arrow_debug_image = f"data:image/png;base64,{b64_img}"
+
+        print(f"[OK] Updated {updated_count} cells with {total_clues} parsed_clues")
 
     def get_processing_stats(self, grid: GridMatrix) -> dict:
-        """
-        חישוב סטטיסטיקות על העיבוד
-
-        Args:
-            grid: הגריד המעובד
-
-        Returns:
-            dict עם מדדים
-        """
+        """חישוב סטטיסטיקות על העיבוד"""
         total_cells = 0
         high_confidence = 0
         medium_confidence = 0
@@ -297,8 +315,9 @@ class BatchProcessor:
                     if result.ocr_result:
                         ocr_confidences.append(result.ocr_result.confidence)
 
-                    if result.arrow_result:
-                        arrow_confidences.append(result.arrow_result.confidence)
+                    if result.arrow_results:
+                        for arrow in result.arrow_results:
+                            arrow_confidences.append(arrow.confidence)
 
         return {
             'total_cells': total_cells,

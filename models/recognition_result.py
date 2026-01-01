@@ -33,6 +33,7 @@ class ArrowResult:
     """תוצאת זיהוי חץ"""
     direction: str  # 'straight-down', 'start-left-turn-down', etc.
     confidence: float
+    position: str = "unknown"  # מיקום החץ בתמונה: top-right, bottom-left, center, etc.
     match_location: Tuple[int, int] = (0, 0)
     scale_used: float = 1.0
     processing_time: float = 0.0
@@ -63,8 +64,9 @@ class ConfidenceScore:
 class CellRecognitionResult:
     """תוצאה מלאה למשבצת"""
     ocr_result: Optional[OcrResult] = None
-    arrow_result: Optional[ArrowResult] = None
+    arrow_results: Optional[List[ArrowResult]] = None  # רשימה של עד 2 חצים
     confidence: Optional[ConfidenceScore] = None
     processing_time: float = 0.0
-    cell_image: Optional[np.ndarray] = None  # לדיבוג
+    cell_image: Optional[np.ndarray] = None  # לדיבוג - תמונה מדויקת לOCR
+    arrow_image: Optional[np.ndarray] = None  # לדיבוג - תמונה מורחבת לזיהוי חצים
     error: Optional[str] = None  # הודעת שגיאה אם היתה
