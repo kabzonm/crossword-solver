@@ -38,6 +38,17 @@ class ArrowResult:
     scale_used: float = 1.0
     processing_time: float = 0.0
     template_matched: Optional[str] = None  # שם התבנית שהתאימה
+    # מידע גולמי מהזיהוי - לדיבוג
+    exit_side: Optional[str] = None  # פאת היציאה המקורית: top/bottom/left/right
+    arrowhead_direction: Optional[str] = None  # כיוון החץ המקורי: up/down/left/right
+
+
+@dataclass
+class ArrowDetectionResult:
+    """תוצאת זיהוי כל החצים במשבצת"""
+    arrows: List[ArrowResult] = field(default_factory=list)
+    is_split_cell: bool = False  # האם זוהתה משבצת חצויה
+    processing_time: float = 0.0
 
 
 @dataclass
@@ -65,6 +76,7 @@ class CellRecognitionResult:
     """תוצאה מלאה למשבצת"""
     ocr_result: Optional[OcrResult] = None
     arrow_results: Optional[List[ArrowResult]] = None  # רשימה של עד 2 חצים
+    is_split_cell: bool = False  # האם זוהתה משבצת חצויה (קו מפריד או 2 חצים)
     confidence: Optional[ConfidenceScore] = None
     processing_time: float = 0.0
     cell_image: Optional[np.ndarray] = None  # לדיבוג - תמונה מדויקת לOCR

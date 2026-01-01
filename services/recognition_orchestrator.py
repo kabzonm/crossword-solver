@@ -9,14 +9,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from config.cloud_config import CloudServicesConfig, get_cloud_config
-from models.recognition_result import OcrResult, ArrowResult, CellRecognitionResult
+from models.recognition_result import OcrResult, ArrowResult, ArrowDetectionResult, CellRecognitionResult
 
 
 @dataclass
 class RecognitionConfig:
     """הגדרות לזיהוי"""
     use_google_for_text: bool = True
-    use_claude_for_arrows: bool = True
+    use_gemini_for_arrows: bool = True  # שונה מ-GPT ל-Gemini
     use_fallback: bool = True
     fallback_confidence_threshold: float = 0.5
 
@@ -25,7 +25,9 @@ class RecognitionOrchestrator:
     """
     מתאם בין שירותי הזיהוי השונים
     - Google Cloud Vision לטקסט עברי
-    - Claude Vision לחצים
+    - Gemini 3 Pro Vision לחצים (ברירת מחדל)
+    - GPT-4o Vision לחצים (אופציונלי)
+    - Claude Vision לחצים (אופציונלי)
     - Tesseract + Template Matching כ-fallback
     """
 
@@ -38,6 +40,8 @@ class RecognitionOrchestrator:
 
         # Lazy initialization - יטען רק כשצריך
         self._google_ocr = None
+        self._gemini_arrow = None
+        self._gpt_arrow = None
         self._claude_arrow = None
         self._tesseract_ocr = None
         self._template_arrow = None
@@ -51,8 +55,24 @@ class RecognitionOrchestrator:
         return self._google_ocr
 
     @property
+    def gemini_arrow(self):
+        """Lazy load Gemini 3 Pro Arrow Detector"""
+        if self._gemini_arrow is None:
+            from services.gemini_arrow_detector import GeminiArrowDetector
+            self._gemini_arrow = GeminiArrowDetector(self.config.gemini)
+        return self._gemini_arrow
+
+    @property
+    def gpt_arrow(self):
+        """Lazy load GPT-4o Arrow Detector (לא בשימוש - עברנו ל-Gemini)"""
+        if self._gpt_arrow is None:
+            from services.gpt_arrow_detector import GPTArrowDetector
+            self._gpt_arrow = GPTArrowDetector(self.config.gpt)
+        return self._gpt_arrow
+
+    @property
     def claude_arrow(self):
-        """Lazy load Claude Arrow Detector"""
+        """Lazy load Claude Arrow Detector (לא בשימוש - עברנו ל-GPT)"""
         if self._claude_arrow is None:
             from services.claude_arrow_detector import ClaudeArrowDetector
             self._claude_arrow = ClaudeArrowDetector(self.config.claude)
@@ -80,7 +100,7 @@ class RecognitionOrchestrator:
         cell_image: np.ndarray,
         cell_bbox: Tuple[int, int, int, int] = None,
         arrow_image: np.ndarray = None
-    ) -> Tuple[OcrResult, List[ArrowResult]]:
+    ) -> Tuple[OcrResult, List[ArrowResult], bool]:
         """
         זיהוי תוכן משבצת - טקסט + חצים
 
@@ -90,16 +110,16 @@ class RecognitionOrchestrator:
             arrow_image: תמונה מורחבת עם שוליים (BGR) - לזיהוי חצים עם Claude
 
         Returns:
-            Tuple של (OcrResult, List[ArrowResult]) - רשימה של עד 2 חצים
+            Tuple של (OcrResult, List[ArrowResult], is_split_cell) - רשימה של עד 2 חצים + האם זו משבצת חצויה
         """
         # זיהוי טקסט - משתמש בתמונת המשבצת המדויקת (בלי שוליים)
         ocr_result = self._recognize_text(cell_image)
 
         # זיהוי חצים - משתמש בתמונה המורחבת עם שוליים (כדי לראות את החצים)
         arrow_detection_image = arrow_image if arrow_image is not None else cell_image
-        arrow_results = self._detect_arrows(arrow_detection_image, cell_bbox)
+        arrow_results, is_split_cell = self._detect_arrows(arrow_detection_image, cell_bbox)
 
-        return ocr_result, arrow_results
+        return ocr_result, arrow_results, is_split_cell
 
     def _recognize_text(self, image: np.ndarray) -> OcrResult:
         """זיהוי טקסט עם fallback"""
@@ -145,13 +165,94 @@ class RecognitionOrchestrator:
         self,
         image: np.ndarray,
         bbox: Tuple[int, int, int, int] = None
-    ) -> List[ArrowResult]:
-        """זיהוי חצים עם fallback - מחזיר רשימה של עד 2 חצים"""
+    ) -> Tuple[List[ArrowResult], bool]:
+        """
+        זיהוי חצים עם fallback - מחזיר רשימה של עד 2 חצים ו-is_split_cell
 
-        # ניסיון עם Claude Vision
+        Returns:
+            Tuple[List[ArrowResult], bool]: (רשימת חצים, האם זו משבצת חצויה)
+        """
+        is_split_cell = False
+
+        print(f"  [Orchestrator] Arrow detection - provider: {self.config.arrow_detector_provider}")
+        print(f"  [Orchestrator] Fallback enabled: {self.config.enable_fallback}")
+
+        # ניסיון עם Gemini 3 Pro Vision (ברירת מחדל)
+        if self.config.arrow_detector_provider == "gemini":
+            try:
+                detection_result = self.gemini_arrow.detect_arrow(image, bbox)
+
+                # ArrowDetectionResult מכיל arrows ו-is_split_cell
+                results = detection_result.arrows
+                is_split_cell = detection_result.is_split_cell
+
+                # בדיקה אם צריך fallback (אם אין תוצאות או confidence נמוך)
+                if (self.config.enable_fallback and
+                    self.config.fallback_on_low_confidence and
+                    (not results or all(r.confidence < self.config.fallback_confidence_threshold for r in results))):
+
+                    print(f"  Gemini Arrow low confidence, trying Template Matching...")
+                    fallback_result = self.template_arrow.detect_arrow(image, bbox)
+
+                    # Template matching מחזיר תוצאה בודדת, נחזיר כרשימה
+                    if isinstance(fallback_result, list):
+                        return fallback_result, is_split_cell
+                    return [fallback_result], is_split_cell
+
+                return results, is_split_cell
+
+            except Exception as e:
+                print(f"  Gemini Arrow error: {e}")
+                if self.config.enable_fallback and self.config.fallback_on_error:
+                    print("  Falling back to Template Matching...")
+                    fallback_result = self.template_arrow.detect_arrow(image, bbox)
+                    if isinstance(fallback_result, list):
+                        return fallback_result, False
+                    return [fallback_result], False
+                raise
+
+        # ניסיון עם GPT-4o Vision (אופציונלי - לא בשימוש)
+        if self.config.arrow_detector_provider == "gpt":
+            try:
+                detection_result = self.gpt_arrow.detect_arrow(image, bbox)
+
+                # ArrowDetectionResult מכיל arrows ו-is_split_cell
+                results = detection_result.arrows
+                is_split_cell = detection_result.is_split_cell
+
+                # בדיקה אם צריך fallback (אם אין תוצאות או confidence נמוך)
+                if (self.config.enable_fallback and
+                    self.config.fallback_on_low_confidence and
+                    (not results or all(r.confidence < self.config.fallback_confidence_threshold for r in results))):
+
+                    print(f"  GPT Arrow low confidence, trying Template Matching...")
+                    fallback_result = self.template_arrow.detect_arrow(image, bbox)
+
+                    # Template matching מחזיר תוצאה בודדת, נחזיר כרשימה
+                    if isinstance(fallback_result, list):
+                        return fallback_result, is_split_cell
+                    return [fallback_result], is_split_cell
+
+                return results, is_split_cell
+
+            except Exception as e:
+                print(f"  GPT Arrow error: {e}")
+                if self.config.enable_fallback and self.config.fallback_on_error:
+                    print("  Falling back to Template Matching...")
+                    fallback_result = self.template_arrow.detect_arrow(image, bbox)
+                    if isinstance(fallback_result, list):
+                        return fallback_result, False
+                    return [fallback_result], False
+                raise
+
+        # ניסיון עם Claude Vision (אופציונלי - לא בשימוש)
         if self.config.arrow_detector_provider == "claude":
             try:
-                results = self.claude_arrow.detect_arrow(image, bbox)
+                detection_result = self.claude_arrow.detect_arrow(image, bbox)
+
+                # ArrowDetectionResult מכיל arrows ו-is_split_cell
+                results = detection_result.arrows
+                is_split_cell = detection_result.is_split_cell
 
                 # בדיקה אם צריך fallback (אם אין תוצאות או confidence נמוך)
                 if (self.config.enable_fallback and
@@ -163,10 +264,10 @@ class RecognitionOrchestrator:
 
                     # Template matching מחזיר תוצאה בודדת, נחזיר כרשימה
                     if isinstance(fallback_result, list):
-                        return fallback_result
-                    return [fallback_result]
+                        return fallback_result, is_split_cell
+                    return [fallback_result], is_split_cell
 
-                return results
+                return results, is_split_cell
 
             except Exception as e:
                 print(f"  Claude Arrow error: {e}")
@@ -174,15 +275,16 @@ class RecognitionOrchestrator:
                     print("  Falling back to Template Matching...")
                     fallback_result = self.template_arrow.detect_arrow(image, bbox)
                     if isinstance(fallback_result, list):
-                        return fallback_result
-                    return [fallback_result]
+                        return fallback_result, False
+                    return [fallback_result], False
                 raise
 
         # Template Matching כ-primary - מחזיר תוצאה בודדת, נעטוף ברשימה
+        print(f"  [Orchestrator] Using Template Matching as PRIMARY")
         result = self.template_arrow.detect_arrow(image, bbox)
         if isinstance(result, list):
-            return result
-        return [result]
+            return result, False
+        return [result], False
 
     def is_google_available(self) -> bool:
         """בדיקה אם Google Vision זמין"""
@@ -192,8 +294,22 @@ class RecognitionOrchestrator:
         except:
             return False
 
+    def is_gemini_available(self) -> bool:
+        """בדיקה אם Gemini 3 Pro Vision זמין"""
+        try:
+            return bool(self.config.gemini.api_key)
+        except:
+            return False
+
+    def is_gpt_available(self) -> bool:
+        """בדיקה אם GPT-4o Vision זמין (לא בשימוש)"""
+        try:
+            return bool(self.config.gpt.api_key)
+        except:
+            return False
+
     def is_claude_available(self) -> bool:
-        """בדיקה אם Claude Vision זמין"""
+        """בדיקה אם Claude Vision זמין (לא בשימוש)"""
         try:
             return bool(self.config.claude.api_key)
         except:
@@ -205,6 +321,8 @@ class RecognitionOrchestrator:
             "text_ocr": self.config.text_ocr_provider,
             "arrow_detector": self.config.arrow_detector_provider,
             "google_available": self.is_google_available(),
+            "gemini_available": self.is_gemini_available(),
+            "gpt_available": self.is_gpt_available(),
             "claude_available": self.is_claude_available(),
             "fallback_enabled": self.config.enable_fallback
         }

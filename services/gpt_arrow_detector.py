@@ -1,23 +1,24 @@
 """
-Claude Vision Arrow Detector
-זיהוי כיוון חצים באמצעות Claude Vision API
+GPT-4o Vision Arrow Detector
+זיהוי כיוון חצים באמצעות OpenAI GPT-4o Vision API
 """
 
 import base64
 import time
 import json
 import re
+import os
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 import cv2
 
-from config.cloud_config import ClaudeVisionConfig, get_cloud_config
+from config.cloud_config import GPTVisionConfig, get_cloud_config
 from models.recognition_result import ArrowResult, ArrowDetectionResult
 
 
-class ClaudeArrowDetector:
+class GPTArrowDetector:
     """
-    זיהוי חצים באמצעות Claude Vision API
+    זיהוי חצים באמצעות GPT-4o Vision API
     יתרון: הבנת הקשר ויזואלי, זיהוי מדויק של כיוונים מורכבים
     """
 
@@ -170,36 +171,36 @@ Your response must be ONLY a JSON object (no other text):
 - If truly no arrows exist, return: {"is_split_cell": false, "arrows": []}
 """
 
-    def __init__(self, config: ClaudeVisionConfig = None):
+    def __init__(self, config: GPTVisionConfig = None):
         """
         Args:
-            config: הגדרות Claude Vision (אם None, לוקח מ-cloud_config)
+            config: הגדרות GPT Vision (אם None, לוקח מ-cloud_config)
         """
-        self.config = config or get_cloud_config().claude
+        self.config = config or get_cloud_config().gpt
         self._client = None
         self._initialized = False
 
     def _initialize_client(self) -> None:
-        """אתחול הלקוח של Anthropic"""
+        """אתחול הלקוח של OpenAI"""
         if self._initialized:
             return
 
         try:
-            import anthropic
+            from openai import OpenAI
 
             if not self.config.api_key:
                 raise ValueError(
-                    "Claude Vision requires ANTHROPIC_API_KEY environment variable"
+                    "GPT Vision requires OPENAI_API_KEY environment variable or openai_api.txt file"
                 )
 
-            self._client = anthropic.Anthropic(api_key=self.config.api_key)
+            self._client = OpenAI(api_key=self.config.api_key)
             self._initialized = True
-            print("[OK] Claude Vision client initialized")
+            print("[OK] GPT-4o Vision client initialized")
 
         except ImportError:
             raise ImportError(
-                "anthropic not installed. Run:\n"
-                "pip install anthropic"
+                "openai not installed. Run:\n"
+                "pip install openai"
             )
 
     def detect_arrow(
@@ -223,13 +224,13 @@ Your response must be ONLY a JSON object (no other text):
         try:
             # המרה ל-base64
             image_base64 = self._image_to_base64(cell_image)
-            print(f"    [Claude] Image converted to base64 (len={len(image_base64)})")
+            print(f"    [GPT] Image converted to base64 (len={len(image_base64)})")
 
             # קריאה ל-API
-            response = self._call_claude_api(image_base64)
-            print(f"    [Claude] === FULL API RESPONSE ===")
+            response = self._call_gpt_api(image_base64)
+            print(f"    [GPT] === FULL API RESPONSE ===")
             print(f"    {response}")
-            print(f"    [Claude] === END RESPONSE ===")
+            print(f"    [GPT] === END RESPONSE ===")
 
             # פענוח התשובה - מחזירה ArrowDetectionResult
             detection_result = self._parse_response(response)
@@ -239,7 +240,7 @@ Your response must be ONLY a JSON object (no other text):
             for arrow in detection_result.arrows:
                 arrow.processing_time = processing_time
 
-            print(f"    [Claude] Parsed: {len(detection_result.arrows)} arrows found, is_split_cell={detection_result.is_split_cell}")
+            print(f"    [GPT] Parsed: {len(detection_result.arrows)} arrows found, is_split_cell={detection_result.is_split_cell}")
             for i, r in enumerate(detection_result.arrows):
                 print(f"      Arrow {i+1}: direction={r.direction}, confidence={r.confidence}, position={r.position}")
 
@@ -247,7 +248,7 @@ Your response must be ONLY a JSON object (no other text):
 
         except Exception as e:
             import traceback
-            print(f"    [Claude] ERROR: {e}")
+            print(f"    [GPT] ERROR: {e}")
             traceback.print_exc()
             return ArrowDetectionResult(
                 arrows=[ArrowResult(
@@ -260,23 +261,22 @@ Your response must be ONLY a JSON object (no other text):
                 processing_time=time.time() - start_time
             )
 
-    def _call_claude_api(self, image_base64: str) -> str:
-        """קריאה ל-Claude Vision API"""
+    def _call_gpt_api(self, image_base64: str) -> str:
+        """קריאה ל-GPT-5.2 Vision API"""
         for attempt in range(self.config.max_retries):
             try:
-                message = self._client.messages.create(
+                response = self._client.chat.completions.create(
                     model=self.config.model,
-                    max_tokens=self.config.max_tokens,
+                    max_completion_tokens=self.config.max_tokens,
                     messages=[
                         {
                             "role": "user",
                             "content": [
                                 {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "image/png",
-                                        "data": image_base64
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/png;base64,{image_base64}",
+                                        "detail": "high"
                                     }
                                 },
                                 {
@@ -288,7 +288,7 @@ Your response must be ONLY a JSON object (no other text):
                     ]
                 )
 
-                return message.content[0].text
+                return response.choices[0].message.content
 
             except Exception as e:
                 if attempt == self.config.max_retries - 1:
@@ -304,7 +304,7 @@ Your response must be ONLY a JSON object (no other text):
     }
 
     def _parse_response(self, response_text: str) -> ArrowDetectionResult:
-        """פענוח תשובת Claude - מחזירה ArrowDetectionResult"""
+        """פענוח תשובת GPT - מחזירה ArrowDetectionResult"""
         try:
             # חיפוש JSON בתשובה (כולל מערכים)
             json_match = re.search(r'\{[^{}]*"arrows"[^{}]*\[.*?\][^{}]*\}', response_text, re.DOTALL)
@@ -372,7 +372,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=position_in_side,
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: exit={exit_side}, arrow={arrowhead}, pos={position_in_side}",
+                        template_matched=f"gpt: exit={exit_side}, arrow={arrowhead}, pos={position_in_side}",
                         exit_side=exit_side,
                         arrowhead_direction=arrowhead
                     ))
@@ -401,7 +401,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=arrow_data.get('position', 'unknown'),
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: offset={offset}, writing={writing}",
+                        template_matched=f"gpt: offset={offset}, writing={writing}",
                         exit_side=old_exit_side,
                         arrowhead_direction=old_arrowhead
                     ))
@@ -428,7 +428,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=position,
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: {arrow_data.get('description', '')}",
+                        template_matched=f"gpt: {arrow_data.get('description', '')}",
                         exit_side=old_exit_side,
                         arrowhead_direction=old_arrowhead
                     ))
@@ -442,7 +442,7 @@ Your response must be ONLY a JSON object (no other text):
                     direction="none",
                     confidence=0.5,
                     position="unknown",
-                    template_matched="claude: no arrows found"
+                    template_matched="gpt: no arrows found"
                 ))
 
             return ArrowDetectionResult(
@@ -488,7 +488,7 @@ Your response must be ONLY a JSON object (no other text):
                 return ArrowResult(
                     direction=direction,
                     confidence=0.6,  # confidence נמוך יותר כי לא היה JSON
-                    template_matched=f"claude_text_parse: {text[:100]}",
+                    template_matched=f"gpt_text_parse: {text[:100]}",
                     exit_side=exit_side,
                     arrowhead_direction=arrowhead
                 )
@@ -497,21 +497,21 @@ Your response must be ONLY a JSON object (no other text):
         return ArrowResult(
             direction="none",
             confidence=0.3,
-            template_matched=f"claude_parse_failed: {text[:100]}"
+            template_matched=f"gpt_parse_failed: {text[:100]}"
         )
 
     def _image_to_base64(self, image: np.ndarray) -> str:
         """המרת תמונה ל-base64"""
-        # Ensure minimum size for Claude to see details properly
+        # Ensure minimum size for GPT to see details properly
         h, w = image.shape[:2]
-        min_size = 150  # Claude needs reasonable resolution
+        min_size = 150
 
         if h < min_size or w < min_size:
             scale = max(min_size / h, min_size / w, 3.0)
             image = cv2.resize(image, None, fx=scale, fy=scale,
                                interpolation=cv2.INTER_CUBIC)
 
-        # Add white border to help Claude see edges
+        # Add white border to help GPT see edges
         border = 10
         image = cv2.copyMakeBorder(image, border, border, border, border,
                                    cv2.BORDER_CONSTANT, value=[255, 255, 255])

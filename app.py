@@ -134,7 +134,7 @@ if uploaded_file is not None:
                 
                 # תצוגה מקדימה פאסיבית (ירוק)
                 preview = vision_service.generate_preview(image, real_rect, rows, cols)
-                st.image(preview, channels="BGR", use_container_width=True)
+                st.image(preview, channels="BGR", width="stretch")
 
         # --- מצב ב': כיוונון עדין (Fine) ---
         elif st.session_state.edit_mode == 'fine':
@@ -191,7 +191,7 @@ if uploaded_file is not None:
     with col2:
         if st.session_state.analyzed_grid:
             st.subheader("שלב 2: תוצאות")
-            st.image(st.session_state.puzzle_image, channels="BGR", use_container_width=True)
+            st.image(st.session_state.puzzle_image, channels="BGR", width="stretch")
             
             grid_obj = st.session_state.analyzed_grid
             clues = sum(1 for r in grid_obj.matrix for c in r if c.type == CellType.CLUE)
@@ -205,15 +205,16 @@ if uploaded_file is not None:
             st.divider()
             st.subheader("שלב 3: זיהוי ואימות ויזואלי")
 
-            # Phase 1: אופציה לבחירה בין Pipeline מקומי ל-GPT-4
-            use_local = st.checkbox(
-                "🚀 השתמש ב-Pipeline מקומי (Phase 1 - מהיר וחינמי)",
-                value=True,
-                help="Pipeline חדש עם EasyOCR + Template Matching"
+            # Phase 2: בחירת ספק
+            provider_option = st.radio(
+                "בחר שיטת זיהוי:",
+                ["☁️ Cloud (Google + Claude) - מומלץ", "💻 Local (Tesseract + Templates)"],
+                horizontal=True
             )
+            use_cloud = provider_option.startswith("☁️")
 
             if st.button("🧠 הפעל זיהוי + הצג חיתוכים", type="primary"):
-                ocr_service = OcrService(use_local_ocr=use_local)
+                ocr_service = OcrService(use_cloud_services=use_cloud)
                 # המרה ל-BGR כי כל הקוד מצפה לפורמט OpenCV
                 image_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
                 updated_grid = ocr_service.recognize_clues(
@@ -221,9 +222,78 @@ if uploaded_file is not None:
                     st.session_state.analyzed_grid
                 )
                 st.session_state.analyzed_grid = updated_grid
+
+                # שמירת הלוגים מה-batch_processor
+                if hasattr(ocr_service, 'batch_processor') and ocr_service.batch_processor:
+                    st.session_state.debug_logs = ocr_service.batch_processor.get_debug_logs()
+
                 # לא עושים rerun - התוצאות יוצגו ישירות למטה
                 st.success("✅ הזיהוי הושלם! גלול למטה לראות תוצאות.")
             
+            # --- בחינה חוזרת של משבצת ---
+            st.markdown("---")
+            st.markdown("#### 🔄 בחינה חוזרת של משבצת")
+            st.caption("הזן מיקום משבצת לבחינה מחדש (מתגבר על טעויות סטוכסטיות של המודל)")
+
+            reexamine_cols = st.columns([1, 1, 2])
+            with reexamine_cols[0]:
+                reexamine_row = st.number_input("שורה", min_value=1, max_value=grid_obj.rows, value=1, key="reexamine_row")
+            with reexamine_cols[1]:
+                reexamine_col = st.number_input("עמודה", min_value=1, max_value=grid_obj.cols, value=1, key="reexamine_col")
+            with reexamine_cols[2]:
+                if st.button("🔄 בחן מחדש", type="secondary"):
+                    # המרת למספור 0-based
+                    row_idx = reexamine_row - 1
+                    col_idx = reexamine_col - 1
+
+                    cell = grid_obj.matrix[row_idx][col_idx]
+                    if cell.type != CellType.CLUE:
+                        st.error(f"משבצת ({reexamine_row},{reexamine_col}) אינה משבצת הגדרה!")
+                    else:
+                        with st.spinner(f"בוחן מחדש משבצת ({reexamine_row},{reexamine_col})..."):
+                            # יצירת BatchProcessor חדש לבחינה
+                            from services.batch_processor import BatchProcessor
+                            from services.recognition_orchestrator import RecognitionOrchestrator
+                            from config.cloud_config import get_cloud_config
+
+                            # אם use_cloud=True, נשתמש ב-config הרגיל, אחרת נייצר config ריק
+                            if use_cloud:
+                                orchestrator = RecognitionOrchestrator()  # ישתמש ב-get_cloud_config() כברירת מחדל
+                            else:
+                                # יצירת config ללא cloud services
+                                from config.cloud_config import CloudServicesConfig, GoogleVisionConfig, ClaudeVisionConfig
+                                local_config = CloudServicesConfig(
+                                    google=GoogleVisionConfig(api_key=None),
+                                    claude=ClaudeVisionConfig(api_key=None)
+                                )
+                                orchestrator = RecognitionOrchestrator(config=local_config)
+
+                            batch_processor = BatchProcessor(orchestrator=orchestrator)
+
+                            # המרה ל-BGR
+                            image_bgr = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+                            # בחינה חוזרת
+                            result = batch_processor.reexamine_cell(
+                                image_bgr,
+                                st.session_state.analyzed_grid,
+                                row_idx,
+                                col_idx
+                            )
+
+                            if result:
+                                st.success(f"✅ משבצת ({reexamine_row},{reexamine_col}) נבחנה מחדש בהצלחה!")
+                                # הצגת התוצאות החדשות
+                                cell = grid_obj.matrix[row_idx][col_idx]
+                                if hasattr(cell, 'parsed_clues') and cell.parsed_clues:
+                                    for clue in cell.parsed_clues:
+                                        st.info(f"חץ: {clue.get('path', 'none')}, טקסט: {clue.get('text', '')[:50]}")
+                                st.rerun()
+                            else:
+                                st.error("שגיאה בבחינה חוזרת")
+
+            st.markdown("---")
+
             # --- בניית הטבלה עם התמונות ---
             data = []
             grid_obj = st.session_state.analyzed_grid
@@ -263,8 +333,9 @@ if uploaded_file is not None:
                         cells_with_clues += 1
                         is_split = len(cell.parsed_clues) > 1
 
-                        # שליפת התמונה (אם קיימת)
+                        # שליפת התמונות (אם קיימות)
                         img_data = getattr(cell, 'debug_image', None)
+                        arrow_img_data = getattr(cell, 'arrow_debug_image', None)
 
                         for clue in cell.parsed_clues:
                             path_str = clue.get('path', 'none')
@@ -275,11 +346,30 @@ if uploaded_file is not None:
                             ocr_conf = clue.get('ocr_confidence', 0.0)
                             arrow_conf = clue.get('arrow_confidence', 0.0)
 
+                            arrow_position = clue.get('arrow_position', '')
+
+                            # מידע אופסט חדש
+                            answer_start = clue.get('answer_start')
+                            writing_dir = clue.get('writing_direction', '')
+                            answer_length = clue.get('answer_length', 0)
+                            zone = clue.get('zone', 'full')
+
+                            # פורמט תחילת תשובה
+                            start_str = f"({answer_start[0]+1},{answer_start[1]+1})" if answer_start else "-"
+
+                            # אייקון כיוון כתיבה
+                            dir_icons = {'down': '↓', 'up': '↑', 'right': '→', 'left': '←'}
+                            dir_icon = dir_icons.get(writing_dir, '')
+
                             data.append({
-                                "תמונה": img_data,
+                                "תמונה OCR": img_data,
+                                "תמונה חצים": arrow_img_data,
                                 "מיקום": f"({r+1},{c+1})",
-                                "מצב": "מפוצל" if is_split else "יחיד",
+                                "אזור": zone,
                                 "חץ": f"{icon}",
+                                "תחילה": start_str,
+                                "כיוון": dir_icon,
+                                "אורך": answer_length if answer_length > 0 else "-",
                                 "טקסט": clue.get('text', ''),
                                 "ביטחון": confidence,
                                 "OCR": ocr_conf,
@@ -296,14 +386,22 @@ if uploaded_file is not None:
                 st.dataframe(
                     data,
                     column_config={
-                        "תמונה": st.column_config.ImageColumn(
-                            "המשבצת שנסרקה",
-                            help="כך המודל 'ראה' את המשבצת",
+                        "תמונה OCR": st.column_config.ImageColumn(
+                            "תמונה ל-OCR",
+                            help="התמונה המדויקת שנשלחה לזיהוי טקסט (Google Vision)",
                             width="small"
                         ),
+                        "תמונה חצים": st.column_config.ImageColumn(
+                            "תמונה לחצים",
+                            help="התמונה המורחבת שנשלחה לזיהוי חצים (Claude)",
+                            width="medium"
+                        ),
                         "מיקום": st.column_config.TextColumn("מיקום", width="small"),
-                        "מצב": st.column_config.TextColumn("מצב", width="small"),
-                        "חץ": st.column_config.TextColumn("מסלול", width="small"),
+                        "אזור": st.column_config.TextColumn("אזור", width="small", help="full/top/bottom/left/right"),
+                        "חץ": st.column_config.TextColumn("חץ", width="small"),
+                        "תחילה": st.column_config.TextColumn("תחילת תשובה", width="small", help="המשבצת בה מתחילה התשובה"),
+                        "כיוון": st.column_config.TextColumn("כיוון", width="small", help="כיוון כתיבת התשובה"),
+                        "אורך": st.column_config.NumberColumn("אורך", width="small", help="מספר אותיות בתשובה"),
                         "טקסט": st.column_config.TextColumn("תוכן", width="large"),
                         "ביטחון": st.column_config.ProgressColumn(
                             "Confidence",
@@ -327,7 +425,7 @@ if uploaded_file is not None:
                             max_value=1
                         ),
                     },
-                    use_container_width=True,
+                    width='stretch',
                     height=800,
                     hide_index=True
                 )
@@ -349,3 +447,254 @@ if uploaded_file is not None:
 
                     לחץ על **'הפעל זיהוי'** כדי לעבד את המשבצות.
                     """)
+
+            # === לוגים מפורטים לדיבוג ===
+            if 'debug_logs' in st.session_state and st.session_state.debug_logs:
+                with st.expander("🔍 לוגים מפורטים - חישוב אופסטים", expanded=False):
+                    debug_logs = st.session_state.debug_logs
+
+                    # סיכום בעיות
+                    problems = [log for log in debug_logs if log['status'] == 'PROBLEM']
+                    ok_count = len(debug_logs) - len(problems)
+
+                    if problems:
+                        st.error(f"⚠️ נמצאו {len(problems)} בעיות בחישוב אופסטים (מתוך {len(debug_logs)} הגדרות)")
+                    else:
+                        st.success(f"✅ כל {len(debug_logs)} ההגדרות חושבו בהצלחה")
+
+                    # טבלת לוגים
+                    st.dataframe(
+                        debug_logs,
+                        column_config={
+                            "source_cell": st.column_config.TextColumn("משבצת מקור", width="small"),
+                            "text": st.column_config.TextColumn("טקסט", width="medium"),
+                            "exit_side": st.column_config.TextColumn("פאת יציאה", width="small", help="מאיזה צד החץ יוצא מהמשבצת"),
+                            "arrowhead": st.column_config.TextColumn("כיוון חץ", width="small", help="לאן ראש החץ מצביע"),
+                            "arrow_direction": st.column_config.TextColumn("סוג חץ", width="small"),
+                            "arrow_position": st.column_config.TextColumn("מיקום חץ", width="small"),
+                            "answer_start": st.column_config.TextColumn("תחילת תשובה", width="small"),
+                            "writing_direction": st.column_config.TextColumn("כיוון כתיבה", width="small"),
+                            "answer_length": st.column_config.NumberColumn("אורך", width="small"),
+                            "start_cell_type": st.column_config.TextColumn("סוג משבצת התחלה", width="small"),
+                            "status": st.column_config.TextColumn("סטטוס", width="small"),
+                        },
+                        width='stretch',
+                        hide_index=True
+                    )
+
+                    # הסבר על בעיות נפוצות
+                    if problems:
+                        st.markdown("""
+                        **בעיות נפוצות:**
+                        - `out_of_bounds` - משבצת ההתחלה מחוץ לגריד
+                        - `clue` - משבצת ההתחלה היא הגדרה (לא פתרון)
+                        - `block` - משבצת ההתחלה שחורה
+                        """)
+
+    # === Phase 3: מאגר הגדרות ופתרון ===
+    st.divider()
+    st.subheader("🧠 שלב 3: פתרון התשבץ")
+
+    # בדיקה אם יש נתונים
+    if st.session_state.analyzed_grid and data:
+        from services.clue_database import ClueDatabase
+        from services.solution_grid import SolutionGrid
+        from services.clue_solver import ClueSolver
+        from services.puzzle_solver import PuzzleSolver
+        from config.cloud_config import get_cloud_config
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            if st.button("📊 בנה מאגר הגדרות", type="primary"):
+                with st.spinner("בונה מאגר הגדרות..."):
+                    clue_db = ClueDatabase()
+                    clue_db.build_from_grid(st.session_state.analyzed_grid)
+                    st.session_state.clue_database = clue_db
+
+                    # סטטיסטיקות
+                    stats = clue_db.get_statistics()
+                    st.success(f"""
+                    **מאגר נבנה בהצלחה!**
+                    - סה"כ הגדרות: {stats['total_clues']}
+                    - עם אורך תשובה: {stats['with_answer_length']}
+                    - עם אותיות ידועות: {stats['with_known_letters']}
+                    - אורך ממוצע: {stats['avg_answer_length']:.1f}
+                    """)
+
+        with col2:
+            # הערה: הפותר האינטראקטיבי נמצא בשלב 4 למטה
+            if 'clue_database' in st.session_state and st.session_state.clue_database:
+                st.info("👇 לחץ על 'פתח פותר אינטראקטיבי' למטה להתחיל לפתור")
+
+        # הצגת מאגר ההגדרות
+        if 'clue_database' in st.session_state and st.session_state.clue_database:
+            clue_db = st.session_state.clue_database
+
+            with st.expander("📋 מאגר הגדרות", expanded=False):
+                clue_data = []
+                for clue in clue_db.clues:
+                    constraint = clue.get_constraint_string()
+                    clue_data.append({
+                        "ID": clue.id,
+                        "מיקום": f"({clue.source_cell[0]+1},{clue.source_cell[1]+1})",
+                        "אזור": clue.zone,
+                        "טקסט": clue.text[:30] + "..." if len(clue.text) > 30 else clue.text,
+                        "חץ": clue.arrow_direction,
+                        "תחילה": f"({clue.answer_start_cell[0]+1},{clue.answer_start_cell[1]+1})" if clue.answer_start_cell else "-",
+                        "אורך": clue.answer_length,
+                        "אילוצים": constraint if constraint else "-",
+                        "נפתר": "✅" if clue.is_solved else "❌",
+                        "תשובה": clue.chosen_answer or "-"
+                    })
+
+                st.dataframe(clue_data, width='stretch', hide_index=True)
+
+        # הצגת גריד הפתרון
+        if 'solution_grid' in st.session_state and st.session_state.solution_grid:
+            solution = st.session_state.solution_grid
+            grid_obj = st.session_state.analyzed_grid
+
+            with st.expander("🔤 גריד פתרון", expanded=True):
+                # יצירת טבלת HTML לגריד
+                # direction: ltr כי אנחנו רוצים שעמודה 0 תהיה משמאל (כמו בתשבץ אמיתי)
+                grid_html = "<table style='border-collapse: collapse; direction: ltr; margin: 0 auto;'>"
+                for row in range(solution.rows):
+                    grid_html += "<tr>"
+                    for col in range(solution.cols):
+                        cell = solution.get_cell(row, col)
+                        letter = cell.letter if cell and cell.letter else ""
+
+                        # צביעה לפי סוג המשבצת
+                        original_cell = grid_obj.matrix[row][col]
+                        cell_content = letter
+                        font_size = "20px"
+
+                        if original_cell.type == CellType.BLOCK:
+                            bg_color = "#333"
+                            text_color = "#333"
+                        elif original_cell.type == CellType.CLUE:
+                            bg_color = "#e0e0ff"
+                            text_color = "#333"
+                            font_size = "8px"
+                            # הוספת טקסט ההגדרה
+                            if hasattr(original_cell, 'parsed_clues') and original_cell.parsed_clues:
+                                clue_texts = [c.get('text', '')[:15] for c in original_cell.parsed_clues]
+                                cell_content = '<br>'.join(clue_texts)
+                            else:
+                                cell_content = "הגדרה"
+                        else:
+                            # SOLUTION
+                            if cell and cell.is_conflict:
+                                bg_color = "#ffcccc"  # אדום לסתירה
+                            elif letter:
+                                bg_color = "#ccffcc"  # ירוק לאות
+                            else:
+                                bg_color = "#fff"  # לבן לריק
+                            text_color = "#000"
+
+                        # Build cell style
+                        cell_style = f"width:45px;height:45px;border:1px solid #999;text-align:center;font-size:{font_size};font-weight:bold;background-color:{bg_color};color:{text_color};vertical-align:middle;overflow:hidden;padding:2px;"
+                        grid_html += f"<td style='{cell_style}'>{cell_content}</td>"
+                    grid_html += "</tr>"
+                grid_html += "</table>"
+
+                st.markdown(grid_html, unsafe_allow_html=True)
+
+                # סטטיסטיקות
+                stats = solution.get_statistics()
+                st.caption(f"""
+                מילוי: {stats['completion_percentage']:.0f}% |
+                משבצות מלאות: {stats['filled_cells']}/{stats['total_cells']} |
+                סתירות: {stats['conflicts']}
+                """)
+
+        # === Phase 4: פותר אינטראקטיבי ===
+        st.divider()
+        st.subheader("🎮 שלב 4: פתרון אינטראקטיבי")
+
+        if 'clue_database' in st.session_state and st.session_state.clue_database:
+            from ui import SolverView, SolverViewConfig, SolverUIState, SolverMode
+
+            # Initialize interactive solver state
+            if 'interactive_solver_ready' not in st.session_state:
+                st.session_state.interactive_solver_ready = False
+
+            if st.button("🎯 פתח פותר אינטראקטיבי", type="primary"):
+                st.session_state.interactive_solver_ready = True
+
+            if st.session_state.interactive_solver_ready:
+                # Prepare grid data for display
+                grid_obj = st.session_state.analyzed_grid
+                grid_data = []
+
+                for row_idx in range(grid_obj.rows):
+                    row_data = []
+                    for col_idx in range(grid_obj.cols):
+                        cell = grid_obj.matrix[row_idx][col_idx]
+                        cell_info = {
+                            'type': cell.type,
+                            'text': ''
+                        }
+
+                        # For clue cells, add text
+                        if cell.type == CellType.CLUE:
+                            if hasattr(cell, 'parsed_clues') and cell.parsed_clues:
+                                texts = [c.get('text', '')[:10] for c in cell.parsed_clues]
+                                cell_info['text'] = ' / '.join(texts)
+
+                        row_data.append(cell_info)
+                    grid_data.append(row_data)
+
+                # Prepare clues list
+                clue_db = st.session_state.clue_database
+                clues_list = []
+
+                for clue in clue_db.clues:
+                    clues_list.append({
+                        'id': clue.id,
+                        'text': clue.text,
+                        'answer_length': clue.answer_length,
+                        'answer_cells': clue.answer_cells,
+                        'arrow_direction': clue.arrow_direction,
+                        'source_cell': clue.source_cell,
+                        'zone': clue.zone
+                    })
+
+                # Get or create puzzle solver
+                if 'puzzle_solver' not in st.session_state:
+                    from services.puzzle_solver import PuzzleSolver
+                    from services.solution_grid import SolutionGrid
+                    from services.clue_solver import ClueSolver
+                    from config.cloud_config import get_cloud_config
+
+                    config = get_cloud_config()
+                    solution = SolutionGrid(grid_obj.rows, grid_obj.cols)
+                    solver = ClueSolver(api_key=config.claude.api_key, model=config.claude.model)
+                    puzzle_solver = PuzzleSolver(clue_db, solution, solver)
+                    st.session_state.puzzle_solver = puzzle_solver
+                    st.session_state.solution_grid = solution
+
+                # Configure view
+                view_config = SolverViewConfig(
+                    cell_size=40,
+                    letter_delay_ms=150,
+                    show_stats=True,
+                    show_manual_edit=True
+                )
+
+                # Render interactive solver
+                st.markdown("---")
+                view = SolverView(
+                    grid_data=grid_data,
+                    clues=clues_list,
+                    puzzle_solver=st.session_state.puzzle_solver,
+                    config=view_config
+                )
+                view.render()
+
+        else:
+            st.info("בנה קודם את מאגר ההגדרות כדי להפעיל פותר אינטראקטיבי")
+
+    else:
+        st.info("👆 הפעל קודם את זיהוי ההגדרות כדי להמשיך לפתרון")

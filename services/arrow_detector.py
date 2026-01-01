@@ -20,6 +20,23 @@ class ArrowDetector:
     משתמש ב-12 תבניות חצים (כל אחת ב-3 גדלים)
     """
 
+    # מיפוי מ-direction ל-exit_side ו-arrowhead
+    DIRECTION_TO_RAW = {
+        'straight-down': ('bottom', 'down'),
+        'straight-up': ('top', 'up'),
+        'straight-right': ('right', 'right'),
+        'straight-left': ('left', 'left'),
+        'start-down-turn-right': ('bottom', 'right'),
+        'start-down-turn-left': ('bottom', 'left'),
+        'start-up-turn-right': ('top', 'right'),
+        'start-up-turn-left': ('top', 'left'),
+        'start-right-turn-down': ('right', 'down'),
+        'start-right-turn-up': ('right', 'up'),
+        'start-left-turn-down': ('left', 'down'),
+        'start-left-turn-up': ('left', 'up'),
+        'none': (None, None),
+    }
+
     def __init__(self, templates_path: str = None, config: ArrowConfig = None):
         """
         Args:
@@ -123,8 +140,13 @@ class ArrowDetector:
                 match_location=best_location,
                 scale_used=best_scale,
                 processing_time=processing_time,
-                template_matched=None
+                template_matched=None,
+                exit_side=None,
+                arrowhead_direction=None
             )
+
+        # חישוב exit_side ו-arrowhead מה-direction
+        exit_side, arrowhead = self.DIRECTION_TO_RAW.get(best_match, (None, None))
 
         return ArrowResult(
             direction=best_match,
@@ -132,7 +154,9 @@ class ArrowDetector:
             match_location=best_location,
             scale_used=best_scale,
             processing_time=processing_time,
-            template_matched=best_template
+            template_matched=best_template,
+            exit_side=exit_side,
+            arrowhead_direction=arrowhead
         )
 
     def _preprocess_for_template(self, image: np.ndarray) -> np.ndarray:

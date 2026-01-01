@@ -1,6 +1,6 @@
 """
-Claude Vision Arrow Detector
-זיהוי כיוון חצים באמצעות Claude Vision API
+Gemini 3 Pro Vision Arrow Detector
+זיהוי כיוון חצים באמצעות Google Gemini 3 Pro Vision API
 """
 
 import base64
@@ -11,13 +11,13 @@ from typing import Optional, Dict, List, Tuple
 import numpy as np
 import cv2
 
-from config.cloud_config import ClaudeVisionConfig, get_cloud_config
+from config.cloud_config import GeminiVisionConfig, get_cloud_config
 from models.recognition_result import ArrowResult, ArrowDetectionResult
 
 
-class ClaudeArrowDetector:
+class GeminiArrowDetector:
     """
-    זיהוי חצים באמצעות Claude Vision API
+    זיהוי חצים באמצעות Gemini 3 Pro Vision API
     יתרון: הבנת הקשר ויזואלי, זיהוי מדויק של כיוונים מורכבים
     """
 
@@ -170,36 +170,36 @@ Your response must be ONLY a JSON object (no other text):
 - If truly no arrows exist, return: {"is_split_cell": false, "arrows": []}
 """
 
-    def __init__(self, config: ClaudeVisionConfig = None):
+    def __init__(self, config: 'GeminiVisionConfig' = None):
         """
         Args:
-            config: הגדרות Claude Vision (אם None, לוקח מ-cloud_config)
+            config: הגדרות Gemini Vision (אם None, לוקח מ-cloud_config)
         """
-        self.config = config or get_cloud_config().claude
+        self.config = config or get_cloud_config().gemini
         self._client = None
         self._initialized = False
 
     def _initialize_client(self) -> None:
-        """אתחול הלקוח של Anthropic"""
+        """אתחול הלקוח של Google GenAI"""
         if self._initialized:
             return
 
         try:
-            import anthropic
+            from google import genai
 
             if not self.config.api_key:
                 raise ValueError(
-                    "Claude Vision requires ANTHROPIC_API_KEY environment variable"
+                    "Gemini Vision requires GOOGLE_API_KEY environment variable or google_vision_api.txt file"
                 )
 
-            self._client = anthropic.Anthropic(api_key=self.config.api_key)
+            self._client = genai.Client(api_key=self.config.api_key)
             self._initialized = True
-            print("[OK] Claude Vision client initialized")
+            print("[OK] Gemini 3 Pro Vision client initialized")
 
         except ImportError:
             raise ImportError(
-                "anthropic not installed. Run:\n"
-                "pip install anthropic"
+                "google-genai not installed. Run:\n"
+                "pip install google-genai"
             )
 
     def detect_arrow(
@@ -223,13 +223,13 @@ Your response must be ONLY a JSON object (no other text):
         try:
             # המרה ל-base64
             image_base64 = self._image_to_base64(cell_image)
-            print(f"    [Claude] Image converted to base64 (len={len(image_base64)})")
+            print(f"    [Gemini] Image converted to base64 (len={len(image_base64)})")
 
             # קריאה ל-API
-            response = self._call_claude_api(image_base64)
-            print(f"    [Claude] === FULL API RESPONSE ===")
+            response = self._call_gemini_api(image_base64)
+            print(f"    [Gemini] === FULL API RESPONSE ===")
             print(f"    {response}")
-            print(f"    [Claude] === END RESPONSE ===")
+            print(f"    [Gemini] === END RESPONSE ===")
 
             # פענוח התשובה - מחזירה ArrowDetectionResult
             detection_result = self._parse_response(response)
@@ -239,7 +239,7 @@ Your response must be ONLY a JSON object (no other text):
             for arrow in detection_result.arrows:
                 arrow.processing_time = processing_time
 
-            print(f"    [Claude] Parsed: {len(detection_result.arrows)} arrows found, is_split_cell={detection_result.is_split_cell}")
+            print(f"    [Gemini] Parsed: {len(detection_result.arrows)} arrows found, is_split_cell={detection_result.is_split_cell}")
             for i, r in enumerate(detection_result.arrows):
                 print(f"      Arrow {i+1}: direction={r.direction}, confidence={r.confidence}, position={r.position}")
 
@@ -247,7 +247,7 @@ Your response must be ONLY a JSON object (no other text):
 
         except Exception as e:
             import traceback
-            print(f"    [Claude] ERROR: {e}")
+            print(f"    [Gemini] ERROR: {e}")
             traceback.print_exc()
             return ArrowDetectionResult(
                 arrows=[ArrowResult(
@@ -260,37 +260,117 @@ Your response must be ONLY a JSON object (no other text):
                 processing_time=time.time() - start_time
             )
 
-    def _call_claude_api(self, image_base64: str) -> str:
-        """קריאה ל-Claude Vision API"""
+    def _call_gemini_api(self, image_base64: str) -> str:
+        """קריאה ל-Gemini 3 Pro Vision API"""
+        from google.genai import types
+
         for attempt in range(self.config.max_retries):
             try:
-                message = self._client.messages.create(
-                    model=self.config.model,
-                    max_tokens=self.config.max_tokens,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": "image/png",
-                                        "data": image_base64
-                                    }
-                                },
-                                {
-                                    "type": "text",
-                                    "text": self.DETECTION_PROMPT
-                                }
-                            ]
-                        }
-                    ]
+                # יצירת Part מ-bytes
+                image_bytes = base64.b64decode(image_base64)
+                image_part = types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type="image/png"
                 )
 
-                return message.content[0].text
+                # הגדרת thinking budget כדי להגביל את כמות הטוקנים לחשיבה
+                thinking_config = None
+                if hasattr(self.config, 'thinking_budget') and self.config.thinking_budget:
+                    thinking_config = types.ThinkingConfig(
+                        thinking_budget=self.config.thinking_budget
+                    )
+
+                response = self._client.models.generate_content(
+                    model=self.config.model,
+                    contents=[
+                        image_part,
+                        self.DETECTION_PROMPT
+                    ],
+                    config=types.GenerateContentConfig(
+                        temperature=self.config.temperature,
+                        max_output_tokens=self.config.max_tokens,
+                        thinking_config=thinking_config,
+                    )
+                )
+
+                # בדיקה שהתגובה תקינה
+                if response is None:
+                    raise ValueError("Gemini returned None response")
+
+                # חילוץ כל ה-parts מהתשובה
+                thinking_text = None
+                response_text = None
+
+                if hasattr(response, 'candidates') and response.candidates:
+                    candidate = response.candidates[0]
+                    if hasattr(candidate, 'content') and candidate.content:
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            parts = candidate.content.parts
+                            print(f"    [Gemini] Found {len(parts)} parts in response")
+
+                            # עבור על כל ה-parts וזהה thinking vs response
+                            for i, part in enumerate(parts):
+                                part_text = getattr(part, 'text', None)
+                                if part_text:
+                                    # בדיקה אם זה part של thinking
+                                    # Gemini 3 Pro מחזיר thinking ב-part נפרד לפני ה-response
+                                    if i == 0 and len(parts) > 1:
+                                        # Part ראשון כשיש יותר מאחד = thinking
+                                        thinking_text = part_text
+                                        print(f"    [Gemini] === THINKING (part {i}) ===")
+                                        print(f"    {thinking_text}")
+                                        print(f"    [Gemini] === END THINKING ===")
+                                    elif i == len(parts) - 1:
+                                        # Part אחרון = response (JSON)
+                                        response_text = part_text
+                                    else:
+                                        # Parts באמצע - גם הם thinking
+                                        if thinking_text:
+                                            thinking_text += "\n" + part_text
+                                        else:
+                                            thinking_text = part_text
+                                        print(f"    [Gemini] === THINKING (part {i}) ===")
+                                        print(f"    {part_text}")
+                                        print(f"    [Gemini] === END THINKING ===")
+
+                            # אם יש רק part אחד, זה גם ה-thinking וגם ה-response
+                            if len(parts) == 1 and parts[0].text:
+                                response_text = parts[0].text
+                                # בדיקה אם יש thinking בתוך הטקסט (לפני ה-JSON)
+                                if '{' in response_text:
+                                    json_start = response_text.find('{')
+                                    if json_start > 0:
+                                        thinking_text = response_text[:json_start].strip()
+                                        if thinking_text:
+                                            print(f"    [Gemini] === THINKING (embedded) ===")
+                                            print(f"    {thinking_text}")
+                                            print(f"    [Gemini] === END THINKING ===")
+
+                # Fallback ל-response.text אם לא מצאנו parts
+                if not response_text and hasattr(response, 'text') and response.text:
+                    response_text = response.text
+                    # בדיקה אם יש thinking בתוך הטקסט
+                    if '{' in response_text:
+                        json_start = response_text.find('{')
+                        if json_start > 0:
+                            thinking_text = response_text[:json_start].strip()
+                            if thinking_text:
+                                print(f"    [Gemini] === THINKING (from text) ===")
+                                print(f"    {thinking_text}")
+                                print(f"    [Gemini] === END THINKING ===")
+
+                if not response_text:
+                    # הדפסת מידע debug
+                    print(f"    [Gemini] Response object: {response}")
+                    print(f"    [Gemini] Response type: {type(response)}")
+                    if hasattr(response, 'candidates'):
+                        print(f"    [Gemini] Candidates: {response.candidates}")
+                    raise ValueError(f"Gemini returned empty response. Response: {response}")
+
+                return response_text
 
             except Exception as e:
+                print(f"    [Gemini] API attempt {attempt + 1} failed: {e}")
                 if attempt == self.config.max_retries - 1:
                     raise e
                 time.sleep(self.config.retry_delay * (attempt + 1))
@@ -304,8 +384,20 @@ Your response must be ONLY a JSON object (no other text):
     }
 
     def _parse_response(self, response_text: str) -> ArrowDetectionResult:
-        """פענוח תשובת Claude - מחזירה ArrowDetectionResult"""
+        """פענוח תשובת Gemini - מחזירה ArrowDetectionResult"""
         try:
+            # בדיקה שהתשובה לא None
+            if response_text is None:
+                print(f"      [Parse] Response is None, returning 'none'")
+                return ArrowDetectionResult(
+                    arrows=[ArrowResult(
+                        direction="none",
+                        confidence=0.0,
+                        template_matched="gemini: null response"
+                    )],
+                    is_split_cell=False
+                )
+
             # חיפוש JSON בתשובה (כולל מערכים)
             json_match = re.search(r'\{[^{}]*"arrows"[^{}]*\[.*?\][^{}]*\}', response_text, re.DOTALL)
             if json_match:
@@ -372,7 +464,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=position_in_side,
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: exit={exit_side}, arrow={arrowhead}, pos={position_in_side}",
+                        template_matched=f"gemini: exit={exit_side}, arrow={arrowhead}, pos={position_in_side}",
                         exit_side=exit_side,
                         arrowhead_direction=arrowhead
                     ))
@@ -401,7 +493,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=arrow_data.get('position', 'unknown'),
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: offset={offset}, writing={writing}",
+                        template_matched=f"gemini: offset={offset}, writing={writing}",
                         exit_side=old_exit_side,
                         arrowhead_direction=old_arrowhead
                     ))
@@ -428,7 +520,7 @@ Your response must be ONLY a JSON object (no other text):
                         position=position,
                         match_location=(0, 0),
                         scale_used=1.0,
-                        template_matched=f"claude: {arrow_data.get('description', '')}",
+                        template_matched=f"gemini: {arrow_data.get('description', '')}",
                         exit_side=old_exit_side,
                         arrowhead_direction=old_arrowhead
                     ))
@@ -442,7 +534,7 @@ Your response must be ONLY a JSON object (no other text):
                     direction="none",
                     confidence=0.5,
                     position="unknown",
-                    template_matched="claude: no arrows found"
+                    template_matched="gemini: no arrows found"
                 ))
 
             return ArrowDetectionResult(
@@ -488,7 +580,7 @@ Your response must be ONLY a JSON object (no other text):
                 return ArrowResult(
                     direction=direction,
                     confidence=0.6,  # confidence נמוך יותר כי לא היה JSON
-                    template_matched=f"claude_text_parse: {text[:100]}",
+                    template_matched=f"gemini_text_parse: {text[:100]}",
                     exit_side=exit_side,
                     arrowhead_direction=arrowhead
                 )
@@ -497,21 +589,21 @@ Your response must be ONLY a JSON object (no other text):
         return ArrowResult(
             direction="none",
             confidence=0.3,
-            template_matched=f"claude_parse_failed: {text[:100]}"
+            template_matched=f"gemini_parse_failed: {text[:100]}"
         )
 
     def _image_to_base64(self, image: np.ndarray) -> str:
         """המרת תמונה ל-base64"""
-        # Ensure minimum size for Claude to see details properly
+        # Ensure minimum size for Gemini to see details properly
         h, w = image.shape[:2]
-        min_size = 150  # Claude needs reasonable resolution
+        min_size = 150
 
         if h < min_size or w < min_size:
             scale = max(min_size / h, min_size / w, 3.0)
             image = cv2.resize(image, None, fx=scale, fy=scale,
                                interpolation=cv2.INTER_CUBIC)
 
-        # Add white border to help Claude see edges
+        # Add white border to help Gemini see edges
         border = 10
         image = cv2.copyMakeBorder(image, border, border, border, border,
                                    cv2.BORDER_CONSTANT, value=[255, 255, 255])
@@ -547,18 +639,18 @@ Your response must be ONLY a JSON object (no other text):
             emoji string
         """
         mapping = {
-            "straight-left": "⬅️",
-            "straight-right": "➡️",
-            "straight-down": "⬇️",
-            "straight-up": "⬆️",
-            "start-up-turn-right": "↗️",
-            "start-up-turn-left": "↖️",
-            "start-down-turn-right": "↘️",
-            "start-down-turn-left": "↙️",
-            "start-left-turn-down": "↙️",
-            "start-left-turn-up": "↖️",
-            "start-right-turn-down": "↘️",
-            "start-right-turn-up": "↗️",
-            "none": "❓"
+            "straight-left": "<-",
+            "straight-right": "->",
+            "straight-down": "v",
+            "straight-up": "^",
+            "start-up-turn-right": "^>",
+            "start-up-turn-left": "<^",
+            "start-down-turn-right": "v>",
+            "start-down-turn-left": "<v",
+            "start-left-turn-down": "<v",
+            "start-left-turn-up": "<^",
+            "start-right-turn-down": ">v",
+            "start-right-turn-up": ">^",
+            "none": "?"
         }
-        return mapping.get(arrow_direction, "❓")
+        return mapping.get(arrow_direction, "?")

@@ -1,0 +1,367 @@
+/*
+ * Solver Styles - Interactive Crossword Solver UI
+ * עיצוב לפותר התשבץ האינטראקטיבי
+ */
+
+/* === RTL Support === */
+.solver-container {
+    direction: rtl;
+    text-align: right;
+}
+
+/* === Crossword Grid === */
+.crossword-grid {
+    display: grid;
+    gap: 1px;
+    background-color: #333;
+    padding: 1px;
+    direction: rtl;
+    width: fit-content;
+    margin: 0 auto;
+}
+
+.grid-cell {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    position: relative;
+    box-sizing: border-box;
+    transition: background-color 0.2s ease;
+}
+
+/* Cell Types */
+.cell-block {
+    background-color: #000000;
+}
+
+.cell-clue {
+    background-color: #E0E0E0;
+    font-size: 10px;
+    padding: 2px;
+    text-align: center;
+    overflow: hidden;
+    word-break: break-all;
+    line-height: 1.1;
+    color: #333;
+}
+
+.cell-empty {
+    background-color: #FFFFFF;
+}
+
+.cell-solving {
+    background-color: #FFEB3B;
+    animation: pulse 0.5s ease-in-out infinite alternate;
+}
+
+.cell-solved {
+    background-color: #C8E6C9;
+}
+
+.cell-manual {
+    background-color: #BBDEFB;
+    border: 2px solid #1976D2;
+}
+
+.cell-conflict {
+    background-color: #FFCDD2;
+    animation: shake 0.3s ease-in-out;
+}
+
+.cell-highlighted {
+    background-color: #FFF9C4;
+}
+
+/* Lock icon for manual cells */
+.lock-icon {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    font-size: 10px;
+}
+
+/* === Animations === */
+@keyframes pulse {
+    from {
+        opacity: 0.7;
+        transform: scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.5);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+@keyframes fadeOut {
+    from {
+        opacity: 1;
+        background-color: #FFCDD2;
+    }
+    to {
+        opacity: 0;
+    }
+}
+
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-2px); }
+    40% { transform: translateX(2px); }
+    60% { transform: translateX(-2px); }
+    80% { transform: translateX(2px); }
+}
+
+@keyframes borderPulse {
+    0%, 100% { border-color: #1976D2; }
+    50% { border-color: #42A5F5; }
+}
+
+.letter-new {
+    animation: fadeIn 0.2s ease-out;
+}
+
+.letter-removing {
+    animation: fadeOut 0.3s ease-out forwards;
+}
+
+.cell-locking {
+    animation: borderPulse 0.5s ease-in-out 3;
+}
+
+/* === Clues Table === */
+.clues-table {
+    direction: rtl;
+    width: 100%;
+}
+
+.clues-table-row {
+    border-bottom: 1px solid #e0e0e0;
+    padding: 8px 0;
+    transition: background-color 0.2s ease;
+}
+
+.clues-table-row:hover {
+    background-color: #f5f5f5;
+}
+
+.clues-table-row.selected {
+    background-color: #E3F2FD;
+    font-weight: bold;
+}
+
+.clues-table-row.current {
+    background-color: #FFF9C4;
+}
+
+/* Status colors for rows */
+.clues-table-row.pending {
+    background-color: #FFFFFF;
+}
+
+.clues-table-row.in-progress {
+    background-color: #FFEB3B;
+}
+
+.clues-table-row.solved {
+    background-color: #C8E6C9;
+}
+
+.clues-table-row.manual {
+    background-color: #BBDEFB;
+}
+
+.clues-table-row.failed {
+    background-color: #FFCDD2;
+}
+
+.clues-table-row.backtracked {
+    background-color: #FFE0B2;
+}
+
+/* === Control Bar === */
+.control-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-radius: 8px;
+    margin-bottom: 16px;
+}
+
+.control-buttons {
+    display: flex;
+    gap: 8px;
+}
+
+.timer-display {
+    font-family: monospace;
+    font-size: 18px;
+    color: #333;
+}
+
+/* === Stats Panel === */
+.stats-panel {
+    background-color: #fafafa;
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+}
+
+.stat-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.stat-item:last-child {
+    border-bottom: none;
+}
+
+.stat-label {
+    color: #666;
+}
+
+.stat-value {
+    font-weight: bold;
+    color: #333;
+}
+
+/* === Manual Edit Panel === */
+.manual-edit-panel {
+    background-color: #E3F2FD;
+    border: 1px solid #1976D2;
+    border-radius: 8px;
+    padding: 16px;
+    margin-top: 16px;
+}
+
+.manual-edit-panel h4 {
+    color: #1976D2;
+    margin-bottom: 12px;
+}
+
+.known-letters {
+    font-family: monospace;
+    font-size: 18px;
+    letter-spacing: 4px;
+    background-color: #fff;
+    padding: 8px;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.known-letters .known {
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.known-letters .unknown {
+    color: #999;
+}
+
+/* === Completion Summary === */
+.completion-summary {
+    background-color: #E8F5E9;
+    border: 1px solid #4CAF50;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 20px;
+    text-align: center;
+}
+
+.completion-summary.partial {
+    background-color: #FFF8E1;
+    border-color: #FFC107;
+}
+
+.completion-summary.failed {
+    background-color: #FFEBEE;
+    border-color: #F44336;
+}
+
+/* === Progress Bar === */
+.progress-container {
+    width: 100%;
+    height: 8px;
+    background-color: #e0e0e0;
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 8px 0;
+}
+
+.progress-bar {
+    height: 100%;
+    background-color: #4CAF50;
+    transition: width 0.3s ease;
+}
+
+.progress-bar.slow {
+    background-color: #FFC107;
+}
+
+.progress-bar.stuck {
+    background-color: #F44336;
+}
+
+/* === Responsive Design === */
+@media (max-width: 768px) {
+    .crossword-grid {
+        font-size: 14px;
+    }
+
+    .grid-cell {
+        width: 30px !important;
+        height: 30px !important;
+    }
+
+    .control-bar {
+        flex-direction: column;
+        gap: 10px;
+    }
+}
+
+/* === Hebrew Font Support === */
+.hebrew-text {
+    font-family: 'Segoe UI', 'Arial Hebrew', 'David', sans-serif;
+    direction: rtl;
+}
+
+/* === Tooltips === */
+.tooltip {
+    position: relative;
+}
+
+.tooltip::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    background-color: #333;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    white-space: nowrap;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease;
+}
+
+.tooltip:hover::after {
+    opacity: 1;
+    visibility: visible;
+}
