@@ -6,6 +6,7 @@ from streamlit_drawable_canvas import st_canvas
 from services.vision_service import VisionService
 from services.ocr_service_new import OcrService  # Phase 1: השתמש בגרסה החדשה
 from models.grid import CellType
+from database import PuzzleRepository
 
 st.set_page_config(page_title="Crossword Architect", layout="wide")
 st.title("AI Crossword Architect 🧩")
@@ -21,12 +22,28 @@ if 'edit_mode' not in st.session_state:
     st.session_state.edit_mode = 'coarse' # coarse (מלבן) או fine (קווים)
 if 'lines_data' not in st.session_state:
     st.session_state.lines_data = None # שומר את הקווים למצב העדין
+if 'loaded_puzzle_name' not in st.session_state:
+    st.session_state.loaded_puzzle_name = None  # שם התשבץ שנטען מה-DB
+if 'show_load_dialog' not in st.session_state:
+    st.session_state.show_load_dialog = False
+if 'show_save_dialog' not in st.session_state:
+    st.session_state.show_save_dialog = False
+
+# Repository לגישה ל-Database
+puzzle_repo = PuzzleRepository()
 
 # --- סרגל צד ---
 with st.sidebar:
     st.header("1. העלאת תמונה")
-    uploaded_file = st.file_uploader("בחר קובץ", type=['jpg', 'png', 'jpeg'])
-    
+
+    # כפתורי העלאה וטעינה
+    upload_col, load_col = st.columns(2)
+    with upload_col:
+        uploaded_file = st.file_uploader("בחר קובץ", type=['jpg', 'png', 'jpeg'], label_visibility="collapsed")
+    with load_col:
+        if st.button("📂 טען תשבץ", use_container_width=True):
+            st.session_state.show_load_dialog = True
+
     if uploaded_file:
         st.divider()
         st.header("2. הגדרת גריד")
@@ -40,6 +57,83 @@ with st.sidebar:
             st.session_state.edit_mode = 'coarse'
             st.session_state.lines_data = None
             st.session_state.analyzed_grid = None
+            st.session_state.loaded_puzzle_name = None
+            st.rerun()
+
+# === דיאלוג טעינת תשבץ ===
+if st.session_state.show_load_dialog:
+    st.markdown("---")
+    st.subheader("📂 טעינת תשבץ שמור")
+
+    puzzles = puzzle_repo.list_puzzles()
+
+    if not puzzles:
+        st.info("אין תשבצים שמורים עדיין.")
+        if st.button("סגור"):
+            st.session_state.show_load_dialog = False
+            st.rerun()
+    else:
+        # הצגת רשימת תשבצים
+        puzzle_options = {f"{p['name']} ({p['rows']}x{p['cols']})": p['id'] for p in puzzles}
+
+        selected = st.selectbox("בחר תשבץ:", options=list(puzzle_options.keys()))
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("✅ טען", use_container_width=True):
+                puzzle_id = puzzle_options[selected]
+                try:
+                    grid = puzzle_repo.load_puzzle_by_id(puzzle_id)
+                    # שמירה ב-session_state
+                    st.session_state.analyzed_grid = grid
+                    st.session_state.puzzle_image = None  # אין תמונה בשמירה
+                    st.session_state.loaded_puzzle_name = selected.split(" (")[0]
+                    st.session_state.show_load_dialog = False
+                    st.success(f"✅ תשבץ '{st.session_state.loaded_puzzle_name}' נטען בהצלחה!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"שגיאה בטעינה: {e}")
+
+        with col2:
+            if st.button("🗑️ מחק", use_container_width=True):
+                puzzle_id = puzzle_options[selected]
+                puzzle_repo.delete_puzzle(puzzle_id)
+                st.success("התשבץ נמחק")
+                st.rerun()
+
+        with col3:
+            if st.button("❌ ביטול", use_container_width=True):
+                st.session_state.show_load_dialog = False
+                st.rerun()
+
+# === דיאלוג שמירת תשבץ ===
+if st.session_state.show_save_dialog:
+    st.markdown("---")
+    st.subheader("💾 שמירת תשבץ")
+
+    puzzle_name = st.text_input("שם התשבץ:", placeholder="לדוגמה: תשבץ יום שישי")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ שמור", use_container_width=True, disabled=not puzzle_name):
+            if puzzle_name:
+                try:
+                    puzzle_repo.save_puzzle(
+                        name=puzzle_name,
+                        grid=st.session_state.analyzed_grid
+                    )
+                    st.session_state.loaded_puzzle_name = puzzle_name
+                    st.session_state.show_save_dialog = False
+                    st.success(f"✅ התשבץ '{puzzle_name}' נשמר בהצלחה!")
+                    st.rerun()
+                except ValueError as e:
+                    st.error(str(e))
+                except Exception as e:
+                    st.error(f"שגיאה בשמירה: {e}")
+
+    with col2:
+        if st.button("❌ ביטול", use_container_width=True):
+            st.session_state.show_save_dialog = False
             st.rerun()
 
 if uploaded_file is not None:
@@ -191,7 +285,8 @@ if uploaded_file is not None:
     with col2:
         if st.session_state.analyzed_grid:
             st.subheader("שלב 2: תוצאות")
-            st.image(st.session_state.puzzle_image, channels="BGR", width="stretch")
+            if st.session_state.puzzle_image is not None:
+                st.image(st.session_state.puzzle_image, channels="BGR", width="stretch")
             
             grid_obj = st.session_state.analyzed_grid
             clues = sum(1 for r in grid_obj.matrix for c in r if c.type == CellType.CLUE)
@@ -298,27 +393,6 @@ if uploaded_file is not None:
             data = []
             grid_obj = st.session_state.analyzed_grid
 
-            # מיפוי חצים לאייקונים - תואם לשמות מ-ArrowDetector
-            arrow_icons = {
-                'none': '❓',
-                # Straight arrows
-                'straight-left': '⬅️',
-                'straight-right': '➡️',
-                'straight-down': '⬇️',
-                'straight-up': '⬆️',
-                # Step arrows
-                'start-up-turn-right': '↗️',
-                'start-up-turn-left': '↖️',
-                'start-down-turn-right': '↘️',
-                'start-down-turn-left': '↙️',
-                'start-left-turn-down': '↙️',
-                'start-left-turn-up': '↖️',
-                'start-right-turn-down': '↘️',
-                'start-right-turn-up': '↗️',
-                # Legacy names (backward compatibility)
-                'DOWN': '⬇️', 'UP': '⬆️', 'LEFT': '⬅️', 'RIGHT': '➡️',
-            }
-
             # דיבוג: סריקת הגריד
             cells_checked = 0
             cells_with_clues = 0
@@ -338,15 +412,10 @@ if uploaded_file is not None:
                         arrow_img_data = getattr(cell, 'arrow_debug_image', None)
 
                         for clue in cell.parsed_clues:
-                            path_str = clue.get('path', 'none')
-                            icon = arrow_icons.get(path_str, '❓')
-
                             # Phase 1: הוספת confidence scores
                             confidence = clue.get('confidence', 0.0)
                             ocr_conf = clue.get('ocr_confidence', 0.0)
                             arrow_conf = clue.get('arrow_confidence', 0.0)
-
-                            arrow_position = clue.get('arrow_position', '')
 
                             # מידע אופסט חדש
                             answer_start = clue.get('answer_start')
@@ -366,7 +435,6 @@ if uploaded_file is not None:
                                 "תמונה חצים": arrow_img_data,
                                 "מיקום": f"({r+1},{c+1})",
                                 "אזור": zone,
-                                "חץ": f"{icon}",
                                 "תחילה": start_str,
                                 "כיוון": dir_icon,
                                 "אורך": answer_length if answer_length > 0 else "-",
@@ -380,7 +448,17 @@ if uploaded_file is not None:
             st.caption(f"נסרקו {cells_checked} תאים, נמצאו {cells_with_clues} עם parsed_clues")
 
             if data:
-                st.write(f"### תוצאות ({len(data)} הגדרות):")
+                # כותרת + כפתור שמירה
+                title_col, save_col = st.columns([3, 1])
+                with title_col:
+                    st.write(f"### תוצאות ({len(data)} הגדרות):")
+                with save_col:
+                    if st.session_state.loaded_puzzle_name:
+                        st.caption(f"📁 {st.session_state.loaded_puzzle_name}")
+                    else:
+                        if st.button("💾 שמור תשבץ", use_container_width=True):
+                            st.session_state.show_save_dialog = True
+                            st.rerun()
 
                 # קונפיגורציה לטבלה
                 st.dataframe(
@@ -398,7 +476,6 @@ if uploaded_file is not None:
                         ),
                         "מיקום": st.column_config.TextColumn("מיקום", width="small"),
                         "אזור": st.column_config.TextColumn("אזור", width="small", help="full/top/bottom/left/right"),
-                        "חץ": st.column_config.TextColumn("חץ", width="small"),
                         "תחילה": st.column_config.TextColumn("תחילת תשובה", width="small", help="המשבצת בה מתחילה התשובה"),
                         "כיוון": st.column_config.TextColumn("כיוון", width="small", help="כיוון כתיבת התשובה"),
                         "אורך": st.column_config.NumberColumn("אורך", width="small", help="מספר אותיות בתשובה"),
@@ -698,3 +775,43 @@ if uploaded_file is not None:
 
     else:
         st.info("👆 הפעל קודם את זיהוי ההגדרות כדי להמשיך לפתרון")
+
+# === תצוגת תשבץ שנטען מה-DB (ללא uploaded_file) ===
+elif st.session_state.analyzed_grid is not None and st.session_state.loaded_puzzle_name:
+    st.success(f"📁 תשבץ נטען: **{st.session_state.loaded_puzzle_name}**")
+
+    grid_obj = st.session_state.analyzed_grid
+
+    st.subheader("תוצאות הזיהוי")
+
+    # בניית טבלת תוצאות
+    data = []
+    for r in range(grid_obj.rows):
+        for c in range(grid_obj.cols):
+            cell = grid_obj.matrix[r][c]
+            if hasattr(cell, 'parsed_clues') and cell.parsed_clues:
+                for clue in cell.parsed_clues:
+                    writing_dir = clue.get('writing_direction', '')
+                    answer_start = clue.get('answer_start')
+                    answer_length = clue.get('answer_length', 0)
+
+                    dir_icons = {'down': '↓', 'up': '↑', 'right': '→', 'left': '←'}
+                    dir_icon = dir_icons.get(writing_dir, '')
+                    start_str = f"({answer_start[0]+1},{answer_start[1]+1})" if answer_start else "-"
+
+                    data.append({
+                        "מיקום": f"({r+1},{c+1})",
+                        "תחילה": start_str,
+                        "כיוון": dir_icon,
+                        "אורך": answer_length if answer_length > 0 else "-",
+                        "טקסט": clue.get('text', '')[:40],
+                    })
+
+    if data:
+        st.write(f"**{len(data)} הגדרות**")
+        st.dataframe(data, hide_index=True, height=600)
+    else:
+        st.warning("לא נמצאו הגדרות בתשבץ זה")
+
+else:
+    st.info("👈 העלה תמונת תשבץ או טען תשבץ שמור כדי להתחיל")
