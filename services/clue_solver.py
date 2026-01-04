@@ -21,6 +21,7 @@ except ImportError:
 class SolverResult:
     """תוצאת פתרון הגדרה"""
     candidates: List[Tuple[str, float]]  # [(תשובה, ביטחון), ...]
+    clue_certainty: float = 0.5  # ודאות ההגדרה (0.0-1.0)
     processing_time: float = 0.0
     error: Optional[str] = None
 
@@ -44,37 +45,70 @@ Clue: "{clue_text}"
 Answer length: {length} letters
 {constraints_info}
 
+SPECIAL FORMATS - IMPORTANT:
+1. Multi-word answers with (X,Y) notation:
+   - If the clue shows "(3,2)" it means 3 letters + 2 letters = 5 total
+   - Write the answer WITHOUT spaces: "לב טוב" → "לבטוב"
+   - Example: "שלום עליכם (4,6)" = 10 letters → "שלוםעליכם"
+
+2. Acronyms with 'ר"ת' or "ראשי תיבות":
+   - Give the acronym letters only
+   - Example: 'ארצות הברית (ר"ת)' → "ארהב"
+   - Example: 'צבא הגנה לישראל (ר"ת)' → "צהל"
+
 IMPORTANT:
-- This is a HEBREW crossword - answers must be in Hebrew
+- This is a HEBREW crossword - answers must be in Hebrew only
 - The answer must be EXACTLY {length} Hebrew letters
+- NO spaces, NO punctuation - just Hebrew letters
 - Consider wordplay, puns, and double meanings common in Hebrew crosswords
 {known_letters_hint}
 
-Provide your top 10 answer candidates, ranked by likelihood.
-
 Respond with JSON only:
 {{
+  "clue_certainty": 0.85,
   "candidates": [
-    {{"answer": "תשובה", "confidence": 0.95, "explanation": "brief reason"}},
-    {{"answer": "אחרת", "confidence": 0.80, "explanation": "brief reason"}},
+    {{"answer": "תשובה", "confidence": 0.95}},
+    {{"answer": "אחרת", "confidence": 0.80}},
     ...
   ]
 }}
 
+FIELD EXPLANATIONS:
+- clue_certainty: How "narrow" is this clue?
+  - 1.0 = Only one possible answer (famous brand, specific person, etc.)
+  - 0.5 = A few dozen options (city in Israel, animal, etc.)
+  - 0.1 = Many options (letter in English, number, etc.)
+
+- confidence: Your certainty that THIS SPECIFIC answer is correct
+  - 0.95+ = Very confident
+  - 0.7-0.9 = Likely correct
+  - 0.5-0.7 = Possible
+  - <0.5 = Guess
+
 Rules:
-1. Each answer must be EXACTLY {length} Hebrew letters (no spaces, no punctuation)
-2. Confidence is 0.0 to 1.0
-3. If you're unsure, still provide your best guesses with lower confidence
-4. Consider common Hebrew crossword patterns and conventions
+1. Each answer must be EXACTLY {length} Hebrew letters
+2. Provide up to 10 candidates, sorted by confidence (highest first)
+3. For famous clues (brands, songs, etc.) - confidence should be high
+4. For ambiguous clues - confidence should be lower, provide variety
 """
 
     BATCH_SOLVE_PROMPT = """You are a Hebrew crossword puzzle expert. Solve these clues.
 
 {clues_list}
 
+SPECIAL FORMATS - IMPORTANT:
+1. Multi-word answers with (X,Y) notation:
+   - "(3,2)" means 3 letters + 2 letters = 5 total, written WITHOUT spaces
+   - Example: "שלום עליכם (4,6)" → "שלוםעליכם" (10 letters)
+
+2. Acronyms with 'ר"ת' or "ראשי תיבות":
+   - Give acronym letters only
+   - Example: 'ארצות הברית (ר"ת)' → "ארהב"
+
 IMPORTANT:
-- This is a HEBREW crossword - all answers must be in Hebrew
-- Each answer must match EXACTLY the specified length
+- This is a HEBREW crossword - all answers must be in Hebrew only
+- Each answer must be EXACTLY the specified length
+- NO spaces, NO punctuation - just Hebrew letters
 - Consider wordplay, puns, and double meanings
 
 Respond with JSON only:
@@ -82,6 +116,7 @@ Respond with JSON only:
   "solutions": [
     {{
       "clue_id": "clue_0_0_full",
+      "clue_certainty": 0.85,
       "candidates": [
         {{"answer": "תשובה", "confidence": 0.95}},
         {{"answer": "אחרת", "confidence": 0.80}}
@@ -90,6 +125,14 @@ Respond with JSON only:
     ...
   ]
 }}
+
+FIELD EXPLANATIONS:
+- clue_certainty: How "narrow" is this clue?
+  - 1.0 = Only one answer (famous brand, specific song, etc.)
+  - 0.5 = A few dozen options (city, animal, etc.)
+  - 0.1 = Many options (letter, number, etc.)
+
+- confidence: Your certainty about EACH SPECIFIC answer
 """
 
     def __init__(self, api_key: str = None, model: str = "claude-sonnet-4-20250514"):
@@ -270,9 +313,15 @@ Respond with JSON only:
 
             data = json.loads(json_str)
 
+            # קריאת clue_certainty
+            clue_certainty = data.get('clue_certainty', 0.5)
+
             candidates = []
             for cand in data.get('candidates', []):
                 answer = cand.get('answer', '')
+
+                # הסרת רווחים אם יש (למקרה של תשובות מרובות מילים)
+                answer = answer.replace(' ', '')
 
                 # סינון תשובות לא תקינות
                 if len(answer) != clue.answer_length:
@@ -288,7 +337,10 @@ Respond with JSON only:
             # מיון לפי ביטחון
             candidates.sort(key=lambda x: x[1], reverse=True)
 
-            return SolverResult(candidates=candidates[:10])
+            return SolverResult(
+                candidates=candidates[:10],
+                clue_certainty=clue_certainty
+            )
 
         except json.JSONDecodeError as e:
             return SolverResult(
@@ -321,9 +373,15 @@ Respond with JSON only:
                 if not clue:
                     continue
 
+                # קריאת clue_certainty
+                clue_certainty = solution.get('clue_certainty', 0.5)
+
                 candidates = []
                 for cand in solution.get('candidates', []):
                     answer = cand.get('answer', '')
+
+                    # הסרת רווחים אם יש
+                    answer = answer.replace(' ', '')
 
                     if len(answer) != clue.answer_length:
                         continue
@@ -335,7 +393,10 @@ Respond with JSON only:
                     candidates.append((answer, confidence))
 
                 candidates.sort(key=lambda x: x[1], reverse=True)
-                results[clue_id] = SolverResult(candidates=candidates[:10])
+                results[clue_id] = SolverResult(
+                    candidates=candidates[:10],
+                    clue_certainty=clue_certainty
+                )
 
         except json.JSONDecodeError as e:
             for clue in clues:
